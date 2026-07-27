@@ -13,7 +13,7 @@ answering questions against a model running on your own machine, and then does
 the thing that makes the rest of the book cheap to follow: proves that the same
 agent runs against several different providers without touching the agent code.
 
-Along the way it introduces conversation threads, which look like a minor
+Along the way it introduces conversation sessions, which look like a minor
 convenience and are in fact the mechanism that makes Chapters~\ref{ch:memory}
 and~\ref{ch:workflows-advanced} possible.
 
@@ -395,12 +395,13 @@ AIAgent agent = new ChatClientAgent(
 
 \api{ChatClientAgent} is the general-purpose agent type: it takes any
 \api{IChatClient} and adds instruction handling, conversation history, and the
-tool-calling loop. Reach for the explicit constructor when you need the options
-object --- for a custom message store, for instance, which is how
-Chapter~\ref{ch:memory} persists conversations to PostgreSQL.
+tool-calling loop. Reach for the options form when you need to configure
+something the convenience overload does not expose --- a custom history store,
+for instance, which is how Chapter~\ref{ch:memory} persists conversations to
+PostgreSQL.
 
 \begin{csharp}[caption={The options form, used from Chapter~\ref{ch:memory} onward}, label={lst:agent-options}]
-var agent = chatClient.CreateAIAgent(new ChatClientAgentOptions
+AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
 {
     Name = "Assistant",
     ChatOptions = new()
@@ -408,19 +409,18 @@ var agent = chatClient.CreateAIAgent(new ChatClientAgentOptions
         Instructions = "You are a helpful assistant."
     },
     // Plug in your own history store; the framework calls it to load and save.
-    ChatMessageStoreFactory = ctx => new FileChatMessageStore(ctx.SerializedState)
+    ChatHistoryProvider = new PostgresChatHistoryProvider(dbContextFactory)
 });
 \end{csharp}
 
-\begin{verifybox}
-\textbf{Two names for one operation.} You will find both \api{AsAIAgent} and
-\api{CreateAIAgent} in current published material, sometimes in documentation
-written weeks apart. This is residue from the preview-to-GA transition rather
-than two distinct APIs. Check which one your pinned version exposes ---
-IntelliSense on the \api{IChatClient} extension methods will settle it in five
-seconds --- and use that one consistently. Listing~\ref{lst:agent-options} in
-particular should be verified before use.
-\end{verifybox}
+\begin{note}
+\textbf{\api{AsAIAgent}, not \api{CreateAIAgent}.} Both names circulated during
+the preview-to-GA transition and both still appear in published material. They
+were never two APIs. \api{AsAIAgent} is the one that survived --- it is what the
+shipped extension methods are called, and what the framework's own samples use
+without exception. If you inherit code calling \api{CreateAIAgent}, it predates
+the rename.
+\end{note}
 
 \subsection{On instructions and names}
 
@@ -473,37 +473,52 @@ one of the seams \S\ref{sec:swap-limits} examines.
 \end{note}
 
 % ============================================================
-\section{Conversation threads}
-\label{sec:threads}
-\index{AgentThread@\texttt{AgentThread}}
+\section{Conversation sessions}
+\label{sec:sessions}
+\index{AgentSession@\texttt{AgentSession}}
 
 Every example so far has been amnesiac. Ask a follow-up question and the agent
 has no idea what you are referring to, because each \api{RunAsync} call without a
-thread creates a throwaway one that lives only for the duration of that call.
+session creates a throwaway one that lives only for the duration of that call.
 
-\api{AgentThread} is the fix, and it is a more interesting type than its name
+\api{AgentSession} is the fix, and it is a more interesting type than its name
 suggests. It holds the conversation history \emph{plus} any other state the agent
 must preserve across interactions --- including memories, and including
 references to state that lives somewhere else entirely.
 
-\subsection{Creating and using a thread}
+\begin{note}
+\index{AgentThread@\texttt{AgentThread}}
+\textbf{If you are reading about \api{AgentThread}, you are reading something
+old.} The type was renamed to \api{AgentSession} before 1.0, and
+\api{AgentRunResponse} to \api{AgentResponse} with it. A great deal of published
+material --- including blog posts still ranking well --- predates the rename.
+There is no \api{AgentThread} in the package this book pins; the concepts map one
+to one, so old material remains readable, but none of it will compile.
+\end{note}
 
-\begin{csharp}[caption={A thread makes the conversation continuous}, label={lst:thread-basic}]
-AgentThread thread = agent.GetNewThread();
+\subsection{Creating and using a session}
 
-Console.WriteLine(await agent.RunAsync("My name is Konrad.", thread));
-Console.WriteLine(await agent.RunAsync("What is my name?", thread));
+\begin{csharp}[caption={A session makes the conversation continuous}, label={lst:session-basic}]
+AgentSession session = await agent.CreateSessionAsync();
+
+Console.WriteLine(await agent.RunAsync("My name is Konrad.", session));
+Console.WriteLine(await agent.RunAsync("What is my name?", session));
 \end{csharp}
 
-Threads are cheap and independent. One agent can serve many concurrent
+Note that creating a session is asynchronous. For an in-memory session that seems
+like ceremony, and for a provider that stores conversations server-side it is a
+network call --- the signature is shaped by the second case, and you pay a small
+syntactic tax for it in the first.
+
+Sessions are cheap and independent. One agent can serve many concurrent
 conversations:
 
-\begin{csharp}[caption={One agent, two independent conversations}, label={lst:two-threads}]
-AgentThread thread1 = agent.GetNewThread();
-AgentThread thread2 = agent.GetNewThread();
+\begin{csharp}[caption={One agent, two independent conversations}, label={lst:two-sessions}]
+AgentSession session1 = await agent.CreateSessionAsync();
+AgentSession session2 = await agent.CreateSessionAsync();
 
-Console.WriteLine(await agent.RunAsync("What weights should I start with?", thread1));
-Console.WriteLine(await agent.RunAsync("How long will 5x5 take me?", thread2));
+Console.WriteLine(await agent.RunAsync("What weights should I start with?", session1));
+Console.WriteLine(await agent.RunAsync("How long will 5x5 take me?", session2));
 \end{csharp}
 
 That separation is what makes a single registered agent instance viable behind a
@@ -511,89 +526,75 @@ multi-user web application, which is exactly how Chapter~\ref{ch:hosting} uses i
 
 \subsection{Serialising and resuming}
 
-\begin{csharp}[caption={A conversation that survives the process}, label={lst:thread-serialize}]
-AgentThread thread = agent.GetNewThread();
-var response = await agent.RunAsync("Hello, how are you?", thread);
+\begin{csharp}[caption={A conversation that survives the process}, label={lst:session-serialize}]
+AgentSession session = await agent.CreateSessionAsync();
+AgentResponse response = await agent.RunAsync("Hello, how are you?", session);
 
-// Serialise for storage.
-JsonElement serializedThread = thread.Serialize();
-var json = JsonSerializer.Serialize(serializedThread,
+// Serialise for storage. Note this is a method on the agent, not the session.
+JsonElement serializedSession = await agent.SerializeSessionAsync(session);
+var json = JsonSerializer.Serialize(serializedSession,
     new JsonSerializerOptions { WriteIndented = true });
-await File.WriteAllTextAsync("thread.json", json);
+await File.WriteAllTextAsync("session.json", json);
 
 // ... process restarts ...
 
 var reloaded = JsonSerializer.Deserialize<JsonElement>(
-    await File.ReadAllTextAsync("thread.json"));
-AgentThread resumedThread = agent.DeserializeThread(reloaded);
+    await File.ReadAllTextAsync("session.json"));
+AgentSession resumedSession = await agent.DeserializeSessionAsync(reloaded);
 
-response = await agent.RunAsync("What did I just ask you?", resumedThread);
+response = await agent.RunAsync("What did I just ask you?", resumedSession);
 \end{csharp}
 
-\begin{verifybox}
-\textbf{Thread, or session?} This is the most consequential naming instability in
-the framework at the time of writing, and it affects every listing in this
-section.
-
-Older material --- including much of what is still published --- uses
-\api{AgentThread}, \api{GetNewThread}, \api{DeserializeThread} and
-\api{AgentRunResponse}. Microsoft's most recent documentation pages instead use
-\api{AgentSession}, \api{CreateSessionAsync} and \api{AgentResponse}:
-
-\begin{quote}
-\code{AgentSession session = await agent.CreateSessionAsync();}\\
-\code{AgentResponse response = await agent.RunAsync("...", session);}
-\end{quote}
-
-The framework overview now describes ``an agent session for state management,''
-which suggests the session naming is the destination rather than a parallel API.
-Some intermediate versions also expose \api{GetNewThreadAsync} and
-\api{DeserializeThreadAsync}.
-
-Check what your pinned version actually exposes before writing anything on top of
-it, and pick one vocabulary for your whole codebase. Where this book says
-\emph{thread}, read \emph{session} if that is what your SDK gives you --- the
-concept is identical and everything else in this section holds.
-\end{verifybox}
+\begin{note}
+\textbf{Serialisation is the agent's job, not the session's.} An earlier design
+put \code{Serialize()} on the session itself. It moved to the agent, and became
+asynchronous on the way. The reason is the same one that makes
+\api{CreateSessionAsync} asynchronous: only the agent knows which behaviours were
+attached to the session it created, and flushing them may involve I/O.
+\end{note}
 
 Three things about that serialised blob are worth knowing before
 Chapter~\ref{ch:memory} builds a real store on top of it.
 
 \textbf{Its contents depend on the provider.} Where history is held in memory,
-the serialised thread contains the messages themselves. Where the provider stores
-conversations server-side --- Foundry Agents, OpenAI Responses --- the serialised
-thread contains an \emph{identifier} pointing at the remote conversation. Same
-API, radically different persistence characteristics, and different
-data-residency implications.
+the serialised session contains the messages themselves. Where the provider
+stores conversations server-side --- Foundry Agents, OpenAI Responses --- it
+contains an \emph{identifier} pointing at the remote conversation. Same API,
+radically different persistence characteristics, and different data-residency
+implications.
 
-\textbf{Service-side threads are your responsibility to clean up.} If the
+\textbf{Service-side conversations are your responsibility to clean up.} If the
 provider created something remote, deleting it is not automatic. A long-running
-service that creates threads and never removes them accumulates state you are
+service that creates sessions and never removes them accumulates state you are
 paying for.
 
 \begin{warning}
 \textbf{You must serialise and deserialise with the same agent instance.}
-Deserialising a thread on a differently configured agent is not supported, and
-the failure will not necessarily be loud. In practice this means agent
-construction must be deterministic --- registered once in DI, with configuration
-that does not drift between the process that saved and the process that loads.
+A session is constructed by an agent so that the agent can attach behaviours to
+it --- history providers, context providers, compaction. Those behaviours are
+what the serialised state is keyed against, so restoring a session onto a
+differently configured agent is not supported, and the failure will not
+necessarily be loud. In practice this means agent construction must be
+deterministic: registered once in DI, with configuration that does not drift
+between the process that saved and the process that loads.
 \end{warning}
 
-\subsection{Looking inside a thread}
+\subsection{Looking inside a session}
 
 Before moving on, put a breakpoint after the second \api{RunAsync} and inspect
-the thread. It is the fastest way to build an accurate mental model of what the
+the session. It is the fastest way to build an accurate mental model of what the
 framework actually sends to the model on each turn --- and, later, of what
 context compaction removes.
 
-\needscreenshot{vs-debugger-agentthread-watch}%
-{Inspecting an \texttt{AgentThread} mid-conversation}%
+\needscreenshot{vs-debugger-agentsession-watch}%
+{Inspecting an \texttt{AgentSession} mid-conversation}%
 {\vsver{} stopped at a breakpoint on the line after the second
-\texttt{RunAsync} in Listing~\ref{lst:thread-basic}. Capture the editor with the
+\texttt{RunAsync} in Listing~\ref{lst:session-basic}. Capture the editor with the
 breakpoint and the yellow current-line marker visible, plus the \emph{Locals} or
-\emph{Watch} window with the \texttt{thread} variable expanded far enough to show
-the accumulated message collection --- ideally showing both the user messages and
-the assistant replies. Widen the Locals pane so values are not truncated.}
+\emph{Watch} window with the \texttt{session} variable expanded far enough to
+show the accumulated message collection --- ideally showing both the user
+messages and the assistant replies. Widen the Locals pane so values are not
+truncated.}
 
 % ============================================================
 \section{Swapping providers}
@@ -695,7 +696,7 @@ worse experience against a provider that batches.
 computing cost from usage data --- and by Chapter~\ref{ch:observability} you will
 be --- verify per provider rather than assuming a shared shape.
 
-\item[Thread persistence semantics.] As \S\ref{sec:threads} covered: in-memory
+\item[Session persistence semantics.] As \S\ref{sec:sessions} covered: in-memory
 messages for some providers, a remote identifier for others. This changes your
 storage design, not merely your storage size.
 \end{description}
@@ -744,15 +745,16 @@ one to standardise on, because it makes the provider seam visible.
 \api{RunAsync} blocks and returns the whole response; \api{RunStreamingAsync}
 yields updates. Use the second wherever a human is waiting.
 
-\api{AgentThread} carries conversation history and any other state that must
-survive between runs. It serialises to a \api{JsonElement}, must be resumed by an
-identically configured agent instance, and contains either the messages
-themselves or a reference to server-side state depending on the provider --- a
-distinction Chapter~\ref{ch:memory} builds on.
+\api{AgentSession} carries conversation history and any other state that must
+survive between runs. The agent creates it, the agent serialises it --- both
+asynchronously --- it must be resumed by an identically configured agent
+instance, and it contains either the messages themselves or a reference to
+server-side state depending on the provider, a distinction
+Chapter~\ref{ch:memory} builds on.
 
 Provider swapping is genuinely a one-line change at the constructor and genuinely
 not at the seams. The four leaks are tool-calling fidelity, streaming
-granularity, token accounting, and thread persistence semantics.
+granularity, token accounting, and session persistence semantics.
 
 \begin{exercisebox}
 Before Chapter~\ref{ch:tools}:
@@ -761,11 +763,11 @@ Before Chapter~\ref{ch:tools}:
 \item Get \code{HelloAgent} answering against a local model with no cloud account.
 \item Add a second provider behind the factory in Listing~\ref{lst:factory} and
       verify the agent code did not change.
-\item Hold a four-turn conversation, serialise the thread to disk, restart the
+\item Hold a four-turn conversation, serialise the session to disk, restart the
       process, resume it, and confirm the agent still knows what you told it in
       turn one.
-\item Open the serialised \code{thread.json} in an editor. Write down, in your own
-      words, what is in it --- and predict what would change if the provider stored
-      conversations server-side.
+\item Open the serialised \code{session.json} in an editor. Write down, in your
+      own words, what is in it --- and predict what would change if the provider
+      stored conversations server-side.
 \end{enumerate}
 \end{exercisebox}

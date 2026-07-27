@@ -6,26 +6,806 @@ Three things that are routinely confused for one another, and the failure mode
 that follows from confusing them.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+Almost every agent sample you will read keeps its state in a list in memory. That
+is fine for a sample. It is also the reason most agent prototypes cannot be
+promoted: the moment there are two instances behind a load balancer, or a
+deployment restarts mid-conversation, or a compliance reviewer asks where the
+conversation data lives, the design has to be redone from the storage layer up.
+
+This chapter does it properly the first time. It builds a
+\api{ChatHistoryProvider} backed by EF~Core and PostgreSQL, deliberately overflows
+a context window, and fixes the overflow with the framework's compaction
+machinery while logging what compaction cost.
+
+The storage code is the easy half. The hard half is a taxonomy, and it comes
+first, because the most expensive mistakes in this area are not bugs --- they are
+three different concerns implemented as one.
+
+\begin{verifybox}
+The listings in this chapter were derived from the source of
+\pkg{Microsoft.Agents.AI} and its published samples at \mafcore{}, rather than
+transcribed from documentation prose --- which makes the type and member names
+reliable. They have not been compiled by the author as a working solution. The
+PostgreSQL provider in \S\ref{sec:ef-provider} is the author's own code and is
+the least verified thing in the chapter. Compile before you trust it.
+\end{verifybox}
+
+% ============================================================
 \section{Conversation state, agent memory, workflow state}
-% The taxonomy. Getting this wrong is the most common design error.
+\label{sec:taxonomy}
+\index{state!taxonomy}
 
+Three concerns. They have different lifetimes, different owners, different
+consistency requirements, and --- helpfully --- three different abstractions in
+the framework.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lXl@{}}
+\toprule
+\textbf{Concern} & \textbf{What it is} & \textbf{Abstraction} \\
+\midrule
+Conversation state & The message history of one conversation. Append-only,
+scoped to a session, meaningless outside it. & \api{ChatHistoryProvider} \\[4pt]
+Agent memory & Facts derived from conversations that should outlive any one of
+them. Cross-session, mutable, and \emph{not} a transcript. &
+\api{AIContextProvider} \\[4pt]
+Workflow state & The position and payload of a running graph. Owned by the
+runtime, not by a conversation. & \api{ICheckpointStore} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Why the conflation is expensive}
+
+The failure is always the same shape: everything goes in the conversation
+transcript, because early on the transcript is the only thing that exists. Four
+consequences follow, in this order.
+
+\textbf{The context window fills with things nobody needed.} A user's dietary
+preference, stated once in March, is relevant in November. The eleven turns of
+scheduling negotiation around it are not. Storing them in the same place means
+you carry both or lose both.
+
+\textbf{Retention becomes impossible to reason about.} ``Delete conversations
+older than ninety days'' is a sane policy. It is also, if memory lives in the
+transcript, an instruction to make your agent forget the user's name. The two
+concerns have genuinely different retention requirements and cannot share a
+lifecycle.
+
+\textbf{Cross-session behaviour is unreachable.} Anything scoped to a session
+cannot inform a different session, by construction. Teams discover this when the
+second channel ships --- the agent that knew everything in the web app knows
+nothing on the phone.
+
+\textbf{Workflow resumption produces wrong answers.} This is the worst one,
+because it is silent. If a workflow's executors keep state in a conversation
+transcript rather than in the checkpoint, resuming from a checkpoint restores the
+graph but not the state the graph depended on. The run completes. The answer
+differs. Chapter~\ref{ch:workflows-advanced} treats this at length; the reason it
+belongs here is that the root cause is a taxonomy error committed in this
+chapter's territory.
+
+\begin{note}
+A useful test when you are unsure which of the three you are looking at:
+\emph{ask what should happen to it when the user starts a new conversation.}
+Discarded entirely --- conversation state. Carried across --- memory. The
+question does not apply because no user is involved --- workflow state.
+\end{note}
+
+\subsection{Where each one is configured}
+
+All three are pluggable, and the first two hang off the same options object:
+
+\begin{csharp}[caption={The two agent-level extension points}, label={lst:state-options}]
+AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
+{
+    Name = "Assistant",
+    ChatOptions = new() { Instructions = "You are a helpful assistant." },
+
+    // Conversation state: one implementation, owns the transcript.
+    ChatHistoryProvider = new InMemoryChatHistoryProvider(),
+
+    // Derived context: many implementations, called in sequence.
+    AIContextProviders = [new TodoListProvider(), new CalendarProvider()]
+});
+\end{csharp}
+
+Note the asymmetry, which is not accidental. There is exactly one history
+provider, because a conversation has one transcript and one authoritative store.
+There is a \emph{list} of context providers, because there is no limit to the
+number of things that might usefully be injected into a turn. Workflow
+checkpointing is configured on the workflow rather than on the agent, which is
+the clearest signal available that it is not the same kind of thing.
+
+\begin{warning}
+\index{ChatHistoryProvider@\texttt{ChatHistoryProvider}!conflict}
+\textbf{A \api{ChatHistoryProvider} is ignored when the service stores history
+itself.} Foundry Agents and the OpenAI Responses API keep the conversation
+server-side and return a conversation identifier. The framework detects this and
+--- by default --- throws, warns, \emph{and} clears your provider. Three
+independent switches on \api{ChatClientAgentOptions} control it, and all three
+default to \code{true}:
+
+\begin{itemize}[leftmargin=1.4em,nosep]
+\item \code{ThrowOnChatHistoryProviderConflict}
+\item \code{WarnOnChatHistoryProviderConflict}
+\item \code{ClearOnChatHistoryProviderConflict}
+\end{itemize}
+
+\medskip
+Turning the throw off does not make your provider work. It stops the framework
+telling you it is not being used. If you need history in your own database
+against a service-managed provider, you must disable service-side storage on the
+client --- for the Responses API, by constructing it with stored output disabled.
+\end{warning}
+
+That default is worth appreciating. A framework that silently ignored a
+configured storage provider would produce an application that appears to persist
+conversations and does not, discovered in production. Three separate switches,
+all defaulting to loud, is the right call.
+
+% ============================================================
 \section{Context providers}
-% The extension point for injecting derived or retrieved context
+\label{sec:context-providers}
+\index{AIContextProvider@\texttt{AIContextProvider}}
 
-\section{Persisting threads with EF Core and PostgreSQL}
-% Schema, migrations, repository. The chapter that reads as "senior .NET".
-% SCREENSHOT: vs-ef-migrations-pmc
+\api{AIContextProvider} is the extension point for injecting anything into a turn
+that was not typed by the user. It is the mechanism behind retrieval, behind
+memory, and --- as \S\ref{sec:compaction} shows --- behind compaction.
 
+Two methods matter. The provider is asked for context before the model call, and
+told what happened after it; the second is where anything worth keeping gets
+written down.
+
+\begin{csharp}[caption={The shape of a context provider}, label={lst:context-provider}]
+internal sealed class DietaryPreferenceProvider : AIContextProvider
+{
+    private readonly IPreferenceStore _store;
+
+    public DietaryPreferenceProvider(IPreferenceStore store) => this._store = store;
+
+    protected override async ValueTask<AIContext> ProvideAIContextAsync(
+        InvokingContext context, CancellationToken cancellationToken = default)
+    {
+        var known = await this._store.GetAsync(context.Session, cancellationToken);
+
+        return new AIContext
+        {
+            Instructions = known.Count == 0
+                ? null
+                : "Known dietary constraints: " + string.Join(", ", known)
+        };
+    }
+
+    protected override async ValueTask StoreAIContextAsync(
+        InvokedContext context, CancellationToken cancellationToken = default)
+    {
+        // Extract durable facts from the turn. Deliberately not the transcript.
+        foreach (var fact in Extract(context.ResponseMessages ?? []))
+        {
+            await this._store.AddAsync(context.Session, fact, cancellationToken);
+        }
+    }
+}
+\end{csharp}
+
+\api{AIContext} carries three things, and which one you use is a design decision
+with consequences:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Property} & \textbf{Use when} \\
+\midrule
+\code{Instructions} & The context is a standing constraint that applies to the
+whole turn. Cheapest, and least likely to be mistaken for something the user
+said. \\
+\code{Messages} & The context is genuinely conversational --- retrieved
+documents, prior exchanges. Costs the most tokens. \\
+\code{Tools} & The context should let the model \emph{choose} to fetch, rather
+than paying for it every turn. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Providers compose, in order}
+
+Multiple providers run as a pipeline, each receiving the context accumulated by
+the previous one. That is a genuinely useful property --- a memory provider can
+see what a retrieval provider just injected --- and a genuinely easy source of
+duplicated work if two providers independently decide the same document is
+relevant.
+
+\subsection{Message source stamping, and why you should care}
+
+Every message a provider injects is stamped with its source. The stamp is read
+back with the \api{GetAgentRequestMessageSourceType} extension method, whose
+values include \api{AIContextProvider} and \api{ChatHistory}.
+
+This exists to solve a specific recursive problem. Without it, a retrieval
+provider injects three documents into turn one; those messages are stored in the
+transcript; turn two loads the transcript \emph{and} runs retrieval again; by
+turn six the context is mostly copies of the same documents. The framework's
+default is to exclude anything already sourced from chat history when storing,
+and most real configurations want to exclude context-provider output too:
+
+\begin{csharp}[caption={Keeping injected context out of the transcript}, label={lst:source-filter}]
+ChatHistoryProvider = new InMemoryChatHistoryProvider(new InMemoryChatHistoryProviderOptions
+{
+    StorageInputRequestMessageFilter = messages => messages.Where(m =>
+        m.GetAgentRequestMessageSourceType() != AgentRequestMessageSourceType.AIContextProvider &&
+        m.GetAgentRequestMessageSourceType() != AgentRequestMessageSourceType.ChatHistory)
+})
+\end{csharp}
+
+\begin{note}
+This is not universally correct. If a retrieved document informed an answer, and
+you later need to explain why the agent said what it said, having dropped the
+document from the transcript makes that reconstruction impossible. Storing
+injected context is a legitimate choice --- it trades context bloat for
+auditability. Make it deliberately rather than by accepting whichever default you
+first encountered.
+\end{note}
+
+\subsection{Where provider state lives}
+
+A provider instance is shared across every session it serves. Session-specific
+state therefore must not go in its fields --- it goes in the session's state bag,
+via \api{ProviderSessionState<TState>}, which serialises with the session
+automatically. The provider declares which keys it owns through \api{StateKeys}.
+
+\begin{warning}
+\textbf{Instance fields on a provider are a concurrency bug waiting for load.} A
+provider that caches ``the current user'' in a field works perfectly in a console
+sample with one conversation, and returns another user's data under concurrency.
+The state bag exists precisely so this does not have to be solved by each
+implementer, and the framework's own providers all use it.
+\end{warning}
+
+% ============================================================
+\section{Persisting sessions with EF Core and PostgreSQL}
+\label{sec:ef-provider}
+\index{EF Core}\index{PostgreSQL}
+
+Now the storage layer. \api{ChatHistoryProvider} is an abstract class with two
+methods worth overriding; the base class handles filtering, ordering, source
+stamping, and merging with the caller's messages on your behalf.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Override} & \textbf{Responsibility} \\
+\midrule
+\api{ProvideChatHistoryAsync} & Return the stored messages, oldest first. Do not
+merge the caller's messages --- the base class does that. \\
+\api{StoreChatHistoryAsync} & Persist the new request and response messages.
+Called only when the run succeeded. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Schema}
+
+The design decision is what to store. Serialising each \api{ChatMessage} to
+\code{jsonb} and keeping the queryable fields as columns gets you both:
+forward-compatible with content types the framework adds later, and still
+indexable.
+
+\begin{csharp}[caption={The entity}, label={lst:ef-entity}]
+public sealed class StoredMessage
+{
+    public long Id { get; set; }                    // bigserial, gives ordering
+    public required string SessionId { get; set; }  // partition key
+    public required string Role { get; set; }
+    public required string SerializedMessage { get; set; }  // jsonb
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public sealed class ChatDbContext(DbContextOptions<ChatDbContext> options)
+    : DbContext(options)
+{
+    public DbSet<StoredMessage> Messages => this.Set<StoredMessage>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        var e = b.Entity<StoredMessage>();
+        e.ToTable("chat_messages");
+        e.HasKey(x => x.Id);
+        e.Property(x => x.SerializedMessage).HasColumnType("jsonb");
+        // The only query this table serves: messages for one session, in order.
+        e.HasIndex(x => new { x.SessionId, x.Id });
+    }
+}
+\end{csharp}
+
+Two notes on that schema. The \code{bigserial} primary key is doing real work:
+message ordering must be total and stable, and \code{CreatedAt} is neither ---
+two messages written in the same millisecond have no defined order, and the
+transcript is the one structure where order \emph{is} the meaning. The composite
+index matches the only query the table serves.
+
+\subsection{The provider}
+
+\begin{csharp}[caption={A ChatHistoryProvider over EF Core}, label={lst:ef-provider}]
+internal sealed class PostgresChatHistoryProvider : ChatHistoryProvider
+{
+    private readonly IDbContextFactory<ChatDbContext> _factory;
+    private readonly ProviderSessionState<State> _sessionState;
+    private readonly int _maxMessages;
+
+    public PostgresChatHistoryProvider(
+        IDbContextFactory<ChatDbContext> factory, int maxMessages = 100)
+    {
+        this._factory = factory;
+        this._maxMessages = maxMessages;
+        this._sessionState = new ProviderSessionState<State>(
+            _ => new State(Guid.NewGuid().ToString("N")),
+            nameof(PostgresChatHistoryProvider));
+    }
+
+    public override IReadOnlyList<string> StateKeys => [this._sessionState.StateKey];
+
+    protected override async ValueTask<IEnumerable<ChatMessage>> ProvideChatHistoryAsync(
+        InvokingContext context, CancellationToken cancellationToken = default)
+    {
+        var state = this._sessionState.GetOrInitializeState(context.Session);
+
+        await using var db = await this._factory.CreateDbContextAsync(cancellationToken);
+
+        // Newest N by descending id, then reverse: bounded query,
+        // chronological result.
+        var rows = await db.Messages
+            .AsNoTracking()
+            .Where(m => m.SessionId == state.SessionId)
+            .OrderByDescending(m => m.Id)
+            .Take(this._maxMessages)
+            .ToListAsync(cancellationToken);
+
+        rows.Reverse();
+
+        return rows.Select(r =>
+            JsonSerializer.Deserialize<ChatMessage>(r.SerializedMessage)!);
+    }
+
+    protected override async ValueTask StoreChatHistoryAsync(
+        InvokedContext context, CancellationToken cancellationToken = default)
+    {
+        var state = this._sessionState.GetOrInitializeState(context.Session);
+
+        await using var db = await this._factory.CreateDbContextAsync(cancellationToken);
+
+        foreach (var message in context.RequestMessages.Concat(context.ResponseMessages ?? []))
+        {
+            db.Messages.Add(new StoredMessage
+            {
+                SessionId = state.SessionId,
+                Role = message.Role.Value,
+                SerializedMessage = JsonSerializer.Serialize(message),
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    // Serialised with the session. The database holds the messages; the
+    // session holds only the key that finds them.
+    internal sealed class State(string sessionId)
+    {
+        public string SessionId { get; } = sessionId;
+    }
+}
+\end{csharp}
+
+\subsection{Four things that are easy to get wrong}
+
+\textbf{Use \api{IDbContextFactory}, not an injected \api{DbContext}.} A
+\api{DbContext} is not thread-safe and is scoped; a provider instance is a
+singleton serving concurrent sessions. Injecting the context directly appears to
+work in development and fails under load with concurrency exceptions that point
+nowhere useful.
+
+\textbf{Bound the query.} \code{Take(maxMessages)} is not an optimisation.
+Without it, a long-running conversation eventually loads its entire history into
+memory on every single turn, and the total cost of the conversation grows with
+the square of its length. Order descending and reverse in memory --- ordering
+ascending and taking the last $N$ requires reading everything.
+
+\textbf{Do not store the messages in the session.} The whole point of an external
+provider is that the serialised session shrinks to a key. If your serialised
+session grows with the conversation, the provider is not being used --- go back
+to the conflict warning in \S\ref{sec:taxonomy}.
+
+\textbf{Treat loaded messages as untrusted.} The framework performs no validation
+on what a provider returns; messages come back with whatever role the database
+says. If an attacker can write to that table, they can promote a \code{user}
+message to a \code{system} message and rewrite the agent's instructions. This is
+indirect prompt injection with a database in the path, and the mitigations are
+ordinary ones: restrict write access to the table, and do not share the store
+across trust boundaries.
+
+\subsection{Migrations}
+
+\begin{shellcmd}
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
+dotnet add package Microsoft.EntityFrameworkCore.Design
+
+dotnet ef migrations add InitialChatHistory
+dotnet ef database update
+\end{shellcmd}
+
+\needscreenshot{vs-ef-migrations-pmc}%
+{Creating the chat history migration}%
+{\vsver{} with the \emph{Package Manager Console} docked at the bottom, showing
+\texttt{Add-Migration InitialChatHistory} having been run and completed
+successfully, and the Solution Explorer visible on the right with the generated
+\texttt{Migrations} folder expanded so that the timestamped migration class and
+the \texttt{ChatDbContextModelSnapshot.cs} file are both readable. Crop to those
+two panes only --- the editor is not the point. Ensure no connection string
+appears in the console output.}
+
+\needscreenshot{db-persisted-session-row}%
+{A conversation on disk}%
+{A database tool --- pgAdmin or DataGrip --- showing a \texttt{SELECT} against
+\texttt{chat\_messages} returning six to ten rows from a single session. The
+\texttt{session\_id}, \texttt{role} and \texttt{created\_at} columns must be
+legible, and at least one \texttt{serialized\_message} cell should be expanded
+far enough to show real JSON content. The teaching point is that a conversation
+is now an ordinary queryable table, so the row structure matters more than the
+choice of tool. Use a throwaway conversation containing no real data rather than
+redacting afterwards.}
+
+\begin{exercisebox}
+Hold a conversation, stop the process, and inspect the database. Then answer two
+questions with SQL rather than with a debugger: how many messages does the
+longest session contain, and what is the total serialised size of the busiest
+one? Both queries are trivial against this schema and impossible against an
+in-memory list --- that difference is the entire argument of this section.
+\end{exercisebox}
+
+% ============================================================
 \section{Retrieval without building a RAG framework}
-% Deliberately minimal: pgvector or keyword; RAG is not the subject
+\label{sec:retrieval}
+\index{RAG}
 
+Retrieval is not the subject of this book, and the framework's position on it is
+refreshingly narrow: retrieval is just a context provider, and there is one in
+the box.
+
+\api{TextSearchProvider} takes a search delegate and injects the results. It does
+not care where those results come from --- a vector store, a full-text index, or
+three hardcoded strings.
+
+\begin{csharp}[caption={Retrieval as a context provider}, label={lst:text-search}]
+// Any search expressible as this delegate works. Nothing here is
+// vector-specific; a Postgres full-text query is a valid implementation.
+Func<string, CancellationToken, Task<IEnumerable<TextSearchProvider.TextSearchResult>>> search =
+    async (query, ct) =>
+    {
+        var hits = await myIndex.SearchAsync(query, top: 3, ct);
+        return hits.Select(h => new TextSearchProvider.TextSearchResult
+        {
+            SourceName = h.Title,
+            SourceLink = h.Url,
+            Text = h.Snippet
+        });
+    };
+
+AIAgent agent = chatClient.AsAIAgent(new ChatClientAgentOptions
+{
+    ChatOptions = new()
+    {
+        Instructions = "Answer from the provided context and cite your source."
+    },
+    AIContextProviders = [new TextSearchProvider(search, new TextSearchProviderOptions
+    {
+        SearchTime = TextSearchProviderOptions.TextSearchBehavior.BeforeAIInvoke
+    })]
+});
+\end{csharp}
+
+The option worth thinking about is \code{SearchTime}. Searching before every
+invocation is predictable, and wastes a search on every turn that did not need
+one. The alternative is to expose search as a \emph{tool} and let the model
+decide --- which costs a round trip when it does search, and nothing when it does
+not. Neither is right in general; the ratio of retrieval-needing turns to total
+turns decides it, and that ratio is measurable in your logs rather than
+guessable.
+
+\begin{note}
+\textbf{Start with keyword search.} For a few thousand documents in one language,
+PostgreSQL full-text search is a \code{tsvector} column and a GIN index, and it
+will embarrass a badly-tuned vector pipeline while requiring no embedding model,
+no re-indexing job, and no similarity threshold to get wrong. If you already run
+PostgreSQL for \S\ref{sec:ef-provider}, you already have a retrieval backend.
+Reach for \code{pgvector} when you can show keyword search failing on queries
+your users actually type.
+\end{note}
+
+% ============================================================
 \section{Context window overflow}
+\label{sec:overflow}
+\index{context window}
+
+Everything so far assumed the conversation fits. This section is about what
+happens when it does not, which on any real workload is a question of when.
+
 \subsection{Reproducing it deliberately}
+
+Do this once, on purpose, in a controlled setting. The failure mode is
+sufficiently unpleasant to meet for the first time in production.
+
+\begin{exercisebox}
+Configure an agent with a tool that returns a large payload --- a few thousand
+tokens of realistic JSON is ideal, since tool results are the usual culprit and
+nobody budgets for them. Loop, asking the agent to call it against different
+inputs, and log the reported usage after every turn.
+
+Record the turn at which the run fails, and \emph{how} it fails. Then repeat
+against a second provider.
+\end{exercisebox}
+
+The result is worth internalising because providers disagree about it. Some
+return an explicit error naming the token limit, which is the good case. Others
+silently truncate from the front of the context, which is much worse: the run
+succeeds, the agent forgets the beginning of the conversation, and the only
+symptom is that answers quietly stop accounting for things the user said earlier.
+Nobody files a bug for that. They stop trusting the agent.
+
+\begin{warning}
+\textbf{The most common cause of overflow is tool results, not user messages.}
+Users write short messages. An API returning a full JSON document costs thousands
+of tokens per call, and an agent that calls it eight times in a chain has spent
+its budget on data that was relevant for one turn each. This is why the
+framework's gentlest compaction strategy targets old tool results specifically.
+\end{warning}
+
 \subsection{Automatic context compaction}
-% Token counts before and after; when compaction loses something it should not
+\label{sec:compaction}
+\index{compaction}
 
-\section{Foundry Memory Store}
-% Persistent structured memory across sessions [preview surface]
+Compaction is delivered as \api{CompactionProvider} --- which is an
+\api{AIContextProvider}. That is not a detail. It means compaction is not a
+special mechanism bolted onto the framework; it is the same extension point from
+\S\ref{sec:context-providers}, used to remove context rather than to add it.
 
+A \api{CompactionStrategy} pairs a \emph{trigger} with a transformation. Triggers
+are composable predicates over the current message index, built from the
+\api{CompactionTriggers} factory: \api{TokensExceed}, \api{MessagesExceed},
+\api{TurnsExceed} and \api{HasToolCalls}, with \api{All} and \api{Any} to
+combine them.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Strategy} & \textbf{Effect, gentlest first} \\
+\midrule
+\api{ToolResultCompactionStrategy} & Collapses old tool-call groups into short
+summaries. Targets the biggest waste first, and loses the least. \\
+\api{SummarizationCompactionStrategy} & Uses a chat client to compress older
+spans of conversation into one message. \\
+\api{SlidingWindowCompactionStrategy} & Keeps only the most recent $N$ turns. \\
+\api{TruncationCompactionStrategy} & Drops oldest groups until under budget. The
+emergency backstop. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\api{PipelineCompactionStrategy} chains them, so the aggressive ones run only
+when the gentle ones were not enough:
+
+\begin{csharp}[caption={A compaction pipeline, gentlest first}, label={lst:compaction-pipeline}]
+using Microsoft.Agents.AI.Compaction;
+
+PipelineCompactionStrategy pipeline = new(
+    // 1. Collapse old tool results once the conversation exceeds seven messages.
+    new ToolResultCompactionStrategy(CompactionTriggers.MessagesExceed(7)),
+
+    // 2. Summarise older spans. Use a cheaper model here than the agent's.
+    new SummarizationCompactionStrategy(
+        summarizerClient, CompactionTriggers.TokensExceed(8_000)),
+
+    // 3. Keep only recent turns.
+    new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(10)),
+
+    // 4. Emergency backstop.
+    new TruncationCompactionStrategy(CompactionTriggers.TokensExceed(24_000)));
+
+AIAgent agent = chatClient
+    .AsBuilder()
+    .UseAIContextProviders(new CompactionProvider(pipeline))
+    .BuildAIAgent(new ChatClientAgentOptions
+    {
+        Name = "Assistant",
+        ChatOptions = new()
+        {
+            Instructions = "You are a helpful assistant.",
+            Tools = [.. tools]
+        }
+    });
+\end{csharp}
+
+If you would rather express the budget than the mechanism, there is a strategy
+that takes the model's context window and your output reservation, and derives a
+tool-eviction and truncation pipeline from threshold fractions of what is left:
+
+\begin{csharp}[caption={Compaction expressed as a budget}, label={lst:compaction-budget}]
+// Input budget is context window minus output reservation.
+// Tool results are evicted at 50% of it; truncation begins at 80%.
+var strategy = new ContextWindowCompactionStrategy(
+    maxContextWindowTokens: 128_000,
+    maxOutputTokens: 4_096);
+\end{csharp}
+
+\subsection{Where you register it changes what it does}
+
+This is the detail that separates working compaction from compaction that appears
+configured and does nothing useful.
+
+\begin{itemize}[leftmargin=1.4em]
+\item Registered on the \textbf{chat client builder}, through
+      \api{UseAIContextProviders}, compaction runs \emph{inside} the tool-calling
+      loop --- so a chain of eight tool calls is compacted as it grows.
+\item Registered on the \textbf{agent}, through \code{AIContextProviders}, it
+      runs once per agent run and therefore skips the function-calling loop
+      entirely.
+\end{itemize}
+
+Since \S\ref{sec:overflow} established that tool results are what overflows the
+window, and the tool-calling loop is where tool results accumulate, agent-level
+registration misses the case you most wanted to handle. Register on the builder
+unless you have a specific reason not to.
+
+\subsection{Measuring what compaction cost}
+
+Compaction is lossy. That is the entire point, and it means ``did it work'' is
+two questions: did the context shrink, and did the answers get worse.
+
+The framework answers the first for you. Compaction emits activities carrying
+before-and-after measurements as span attributes:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Attribute} & \textbf{Carries} \\
+\midrule
+\code{compaction.strategy} & Which strategy fired. \\
+\code{compaction.triggered} & Whether the trigger matched at all. \\
+\code{compaction.before.tokens} & Token count before, and \code{after.tokens}
+after. \\
+\code{compaction.before.messages} & Message count before, and
+\code{after.messages} after. \\
+\code{compaction.duration\_ms} & What the compaction itself cost in time. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Nothing needs instrumenting; subscribe to the activity source and the numbers are
+there. Chapter~\ref{ch:observability} wires that up properly.
+
+\begin{exercisebox}
+\textbf{The measurement this chapter exists for.} Take the overflow reproduction
+from \S\ref{sec:overflow} and run it three ways: uncompacted, with the pipeline
+from Listing~\ref{lst:compaction-pipeline}, and with truncation alone.
+
+Record, per turn: prompt tokens, whether compaction fired, and before-tokens
+versus after-tokens when it did.
+
+Then the part everyone skips. At the end of each run, ask a question whose answer
+depends on something said in the \emph{first} turn. Record whether the agent
+still knows it.
+
+That second measurement is the one with a finding in it. Token reduction is easy
+to achieve and easy to report; a summarisation pipeline that halves token count
+while preserving the answer and a truncation strategy that halves it while losing
+the answer look identical on the first metric. Record both in
+Appendix~\ref{app:providers}.
+\end{exercisebox}
+
+\begin{warning}
+\textbf{Compaction rewrites history, and history is what you serialise.} Once a
+span has been summarised away it is gone from the session, and therefore from
+whatever you persisted. If you need the original transcript for audit or
+evaluation, write it somewhere compaction does not reach. The
+\api{ChatHistoryProvider} from \S\ref{sec:ef-provider} is a reasonable place,
+precisely because the database is append-only and the model never sees it.
+\end{warning}
+
+% ============================================================
+\section{Hosted memory}
+\label{sec:foundry-memory}
+\index{memory!hosted}
+
+Everything so far has you owning the storage. The alternative is to let a service
+own it, and Foundry offers that through \api{FoundryMemoryProvider} --- which,
+consistently with everything else in this chapter, is an \api{AIContextProvider}.
+Memories are written to a named scope, retrieved on later runs, and survive
+across sessions. In a hosted application,
+\api{AddHostedFoundryMemoryProvider} registers it against the service container.
+
+\begin{versionbox}
+\index{Microsoft.Agents.AI.FoundryMemory@\pkg{Microsoft.Agents.AI.FoundryMemory}}
+A standalone \pkg{Microsoft.Agents.AI.FoundryMemory} package exists on NuGet and
+is stranded --- its most recent version is from March 2026, several trains behind
+everything else in the family. Do not start from it. The memory provider ships
+inside \pkg{Microsoft.Agents.AI.Foundry}, with the hosting registration in
+\pkg{Microsoft.Agents.AI.Foundry.Hosting}.
+
+This is a worked example of the release-train reading in
+Appendix~\ref{app:packages}, \S\ref{sec:trains}: a package stalled several trains
+behind its family is not a stable package, it is an abandoned one, and the
+functionality has usually moved rather than died.
+\end{versionbox}
+
+The judgement --- and it is a judgement rather than a measurement --- is that
+hosted memory removes a storage problem and adds a dependency, a data-residency
+question, and a per-operation cost. That is a good trade when memory is genuinely
+cross-session and you are already committed to Foundry, and a poor one when what
+you actually needed was the previous four messages.
+
+If you take one thing from this section, take the pattern rather than the
+product: \emph{memory is a context provider}. Foundry's is one implementation.
+The one in Listing~\ref{lst:context-provider} is another, it is forty lines, and
+it stores its data somewhere you can query with SQL.
+
+% ============================================================
 \section{Summary}
+
+Conversation state, agent memory and workflow state are three concerns with
+different lifetimes and different owners, and the framework gives each one its
+own abstraction: \api{ChatHistoryProvider}, \api{AIContextProvider} and
+\api{ICheckpointStore}. Collapsing them is the most expensive design error in
+this area, and it surfaces as context bloat, unworkable retention policies, no
+cross-session behaviour, and workflow resumption that silently produces different
+answers.
+
+Ask what should happen to a piece of state when the user starts a new
+conversation. The answer names the abstraction.
+
+A \api{ChatHistoryProvider} owns the transcript --- one per agent --- and is
+ignored, loudly, when the service stores history itself. Implementing one over EF
+Core is two overrides: return stored messages oldest first, and persist new ones.
+Use \api{IDbContextFactory}, bound the query, keep the messages out of the
+session, and treat what you load back as untrusted input.
+
+\api{AIContextProvider} injects anything that was not typed by the user, as
+instructions, messages or tools. Providers compose in order, their output is
+source-stamped so it can be kept out of the transcript, and their per-session
+state belongs in the session state bag rather than in instance fields.
+
+Retrieval is a context provider. So is compaction. \api{CompactionProvider} with
+a \api{PipelineCompactionStrategy} degrades gracefully from collapsing old tool
+results to emergency truncation --- and registering it on the chat client builder
+rather than on the agent is what makes it apply inside the tool-calling loop,
+which is where the tokens actually go.
+
+Compaction is lossy by design and emits its own before-and-after token counts.
+Measure both the reduction and what the reduction cost you; only the second
+number distinguishes a good strategy from a cheap one.
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:workflows-basics}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Implement the PostgreSQL \api{ChatHistoryProvider}. Confirm with SQL that a
+      conversation survives a process restart, and confirm by inspecting the
+      serialised session that it contains a key rather than the messages.
+\item Write one \api{AIContextProvider} that extracts a durable fact and
+      reinjects it in a \emph{different} session. This is the moment the taxonomy
+      in \S\ref{sec:taxonomy} stops being abstract.
+\item Overflow a context window on purpose. Record which turn fails and whether
+      your provider errors or truncates silently.
+\item Fix it with the pipeline in Listing~\ref{lst:compaction-pipeline}, and run
+      the full measurement in \S\ref{sec:compaction} --- including the first-turn
+      recall question.
+\item Move the compaction provider from the builder to the agent and re-run the
+      tool-heavy case. Explain the difference in the numbers before reading
+      \S\ref{sec:compaction} again.
+\end{enumerate}
+\end{exercisebox}
