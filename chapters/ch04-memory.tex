@@ -1,0 +1,31 @@
+\chapter{Memory, Context and State}
+\label{ch:memory}
+
+\begin{quote}\itshape
+Three things that are routinely confused for one another, and the failure mode
+that follows from confusing them.
+\end{quote}
+
+% -- OUTLINE (to write) ------------------------------------
+\section{Conversation state, agent memory, workflow state}
+% The taxonomy. Getting this wrong is the most common design error.
+
+\section{Context providers}
+% The extension point for injecting derived or retrieved context
+
+\section{Persisting threads with EF Core and PostgreSQL}
+% Schema, migrations, repository. The chapter that reads as "senior .NET".
+% SCREENSHOT: vs-ef-migrations-pmc
+
+\section{Retrieval without building a RAG framework}
+% Deliberately minimal: pgvector or keyword; RAG is not the subject
+
+\section{Context window overflow}
+\subsection{Reproducing it deliberately}
+\subsection{Automatic context compaction}
+% Token counts before and after; when compaction loses something it should not
+
+\section{Foundry Memory Store}
+% Persistent structured memory across sessions [preview surface]
+
+\section{Summary}

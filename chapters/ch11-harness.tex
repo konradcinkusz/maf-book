@@ -1,0 +1,35 @@
+\chapter{The Agent Harness}
+\label{ch:harness}
+
+\begin{quote}\itshape
+The layer where model reasoning meets a filesystem and a shell --- and the
+question of what is left to build on top of it.
+\end{quote}
+
+% -- OUTLINE (to write) ------------------------------------
+\section{What the harness is}
+% One extension method turns a chat client into a full coding-agent harness
+
+\section{What ships inside it}
+\subsection{Automatic context compaction}
+\subsection{Default instructions and instruction merging}
+\subsection{FileMemoryProvider and FileAccessProvider}
+\subsection{TodoProvider}
+\subsection{AgentModeProvider: plan versus execute}
+\subsection{AgentSkillsProvider}
+\subsection{BackgroundAgentsProvider: fan-out to child agents}
+\subsection{Shell execution and the sandboxed executor}
+
+\section{Pluggable storage backends}
+% Custom AgentFileStore: filesystem, blob
+
+\section{Worked example: an agent that edits your own repository}
+
+\section{CodeAct}
+% Collapsing many tool-call turns into one generated program in a micro-VM
+% [alpha, Python-only at time of writing] -- understand the pattern, not the API
+
+\section{What this means for third-party agent tooling}
+% The honest section: what the platform now does for free, and what does not
+
+\section{Summary}

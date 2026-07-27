@@ -1,0 +1,95 @@
+name: Build
+
+# Validates the book on every push and pull request.
+# This is the workflow that gives contributors feedback; the release workflow
+# only runs on tags and is therefore too late to catch a broken PR.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile PDF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile with latexmk
+        uses: xu-cheng/latex-action@v4
+        with:
+          root_file: main.tex
+          latexmk_use_lualatex: false
+          # pdflatex is sufficient; the preamble degrades gracefully when
+          # optional font packages are missing.
+          args: -pdf -interaction=nonstopmode -halt-on-error -file-line-error
+
+      - name: Check for unresolved references
+        run: |
+          if grep -q "Reference.*undefined" main.log; then
+            echo "::error::Unresolved cross-references remain after the final pass."
+            grep "Reference.*undefined" main.log | sort -u
+            exit 1
+          fi
+          echo "No unresolved references."
+
+      - name: Rename artefact
+        run: mv main.pdf ${{ vars.PDF_NAME || 'MAF-for-dotnet-Engineers' }}.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: book-pdf
+          path: ${{ vars.PDF_NAME || 'MAF-for-dotnet-Engineers' }}.pdf
+          retention-days: 14
+
+      # ---- Reporting -----------------------------------------------------
+      # Two project-specific debt ledgers, surfaced on every build so they
+      # cannot quietly accumulate.
+
+      - name: Report outstanding work
+        if: always()
+        run: |
+          {
+            echo "## Book status"
+            echo ""
+            if command -v pdfinfo >/dev/null 2>&1; then
+              echo "**Pages:** $(pdfinfo *.pdf | awk '/^Pages/ {print $2}')"
+              echo ""
+            fi
+
+            echo "### Screenshots still needed"
+            echo ""
+            MISSING=0
+            for k in $(grep -rhoE '\\needscreenshot\{[^}]*\}' chapters appendices frontmatter \
+                       | sed -E 's/.*\{(.*)\}/\1/' | sort -u); do
+              if [ ! -f "figures/screenshots/$k.png" ]; then
+                echo "- \`$k.png\`"
+                MISSING=$((MISSING+1))
+              fi
+            done
+            [ "$MISSING" -eq 0 ] && echo "_None._"
+            echo ""
+
+            echo "### Listings not yet compiled against the SDK"
+            echo ""
+            VERIFY=$(grep -rc 'begin{verifybox}' chapters appendices frontmatter \
+                     | awk -F: '{s+=$2} END {print s+0}')
+            echo "\`verifybox\` blocks outstanding: **$VERIFY**"
+            echo ""
+            echo "_Nothing ships to a reader with a \`verifybox\` still on it._"
+          } >> "$GITHUB_STEP_SUMMARY"

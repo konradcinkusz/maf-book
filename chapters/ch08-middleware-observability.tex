@@ -1,0 +1,37 @@
+\chapter{Middleware and Observability}
+\label{ch:observability}
+
+\begin{quote}\itshape
+Agent Framework will tell you what happened. It will not tell you whether it was
+any good.
+\end{quote}
+
+% -- OUTLINE (to write) ------------------------------------
+\section{The middleware pipeline}
+\subsection{Agent-level}
+\subsection{Function-level}
+\subsection{Chat-client-level}
+\subsection{Exception handling in the pipeline}
+
+\section{OpenTelemetry out of the box}
+% GenAI semantic conventions: which spans, which attributes
+% OpenTelemetryAgent as an automatic tracing decorator
+
+\section{Where traces go}
+% OTLP collector locally; Application Insights when hosted
+
+\section{Reading a multi-agent trace waterfall}
+% SCREENSHOT: aspire-dashboard-trace-waterfall (Aspire dashboard, not VS)
+
+\section{DevUI}
+% Local agent debugging and inspection
+% SCREENSHOT: devui-agent-inspect
+
+\section{What the traces do not measure}
+% The gap: cost and latency are instrumented; quality is not
+% -> this section is the thesis of the capstone
+
+\section{Custom middleware that scores a turn}
+% Compute a quality score per turn, attach as a span attribute
+
+\section{Summary}

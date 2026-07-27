@@ -1,0 +1,235 @@
+\chapter{Package and Version Reference}
+\label{app:packages}
+
+Agent Framework publishes roughly three dozen NuGet packages under the
+\code{MicrosoftAgentFramework} account. This appendix lists them, grouped the way
+they actually ship.
+
+\begin{versionbox}
+Every version in this appendix was read from \code{nuget.org} in \mafdate{}.
+Treat it as a dated snapshot. Before starting new work, check
+\code{nuget.org/profiles/MicrosoftAgentFramework} and
+\code{github.com/microsoft/agent-framework/releases}.
+\end{versionbox}
+
+% ============================================================
+\section{Release trains}
+\label{sec:trains}
+\index{release trains}
+
+The single most useful fact about the package family is that it does not move on
+one version line. It moves in \emph{trains} --- groups of packages published
+together on the same date with the same version. At the time of writing four were
+observable:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Train} & \textbf{Published} & \textbf{Contents} \\
+\midrule
+\mafcore{} & 10 June 2026 & Core, providers, workflows, DevUI, A2A, AG-UI, Foundry client, GitHub Copilot \\
+\mafext{} & 22 May 2026 & Harness, Hyperlight/CodeAct, DurableTask, Copilot Studio, Cosmos NoSQL, Foundry hosting, Purview, Azure Functions hosting, Aspire DevUI \\
+\code{1.0.0-rc5} & 31 March 2026 & \pkg{Microsoft.Agents.AI.AzureAI} and its declarative companion --- effectively superseded by the \code{Foundry} packages \\
+\code{1.0.0-preview} & 31 March 2026 & \pkg{Microsoft.Agents.AI.FoundryMemory} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Three consequences.
+
+\textbf{A single MSBuild property will not work.} The tempting
+\code{<PackageVersion Include="..." Version="\$(MafVersion)" />} pattern breaks
+the moment you take a dependency from a second train. Pin each package.
+
+\textbf{Version number does not tell you maturity.} \pkg{Microsoft.Agents.AI} at
+\mafcore{} is stable; \pkg{Microsoft.Agents.AI.Hosting} at
+\code{\mafcore{}-preview.260610.1} is not. Same train, same number, different
+suffix. You must read the suffix, not the version.
+
+\textbf{A stale train is a signal.} Packages still on a March \code{rc5} while
+the family has shipped twice since are being deprecated in place. The
+\code{AzureAI} packages are the example: the \code{Foundry}-named packages are
+their continuation.
+
+% ============================================================
+\section{Core --- stable}
+
+These carry no prerelease suffix and are covered by the GA support commitment.
+Everything in Parts~I and~II of this book uses only these.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.Abstractions} & \mafcore{} & Interfaces and abstractions. Reference directly when writing a library that should not pull in the implementation. \\
+\pkg{Microsoft.Agents.AI} & \mafcore{} & Core functionality. \api{AIAgent}, \api{ChatClientAgent}, threads, tools, context providers, middleware. \\
+\pkg{Microsoft.Agents.AI.OpenAI} & \mafcore{} & OpenAI and Azure OpenAI support. \\
+\pkg{Microsoft.Agents.AI.Workflows} & \mafcore{} & Executors, edges, workflow builder, checkpointing. \\
+\pkg{Microsoft.Agents.AI.Workflows.Generators} & \mafcore{} & Roslyn source generators giving compile-time route configuration for executors. \\
+\pkg{Microsoft.Agents.AI.Workflows.Declarative} & \mafcore{} & YAML-defined workflows. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Note what is \emph{not} here: any Ollama, Bedrock or Gemini package. Those
+providers are reached through the \pkg{Microsoft.Extensions.AI.*} connector
+family instead (\S\ref{sec:supporting}), because the provider abstraction lives
+below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
+\end{note}
+
+% ============================================================
+\section{Providers and protocols --- prerelease}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.Anthropic} & \mafcore{}-preview & Anthropic agents. \\
+\pkg{Microsoft.Agents.AI.GitHub.Copilot} & \mafcore{}-rc1 & GitHub Copilot SDK as an agent backend. \\
+\pkg{Microsoft.Agents.AI.Foundry} & \mafcore{}-preview & Foundry Agents client. \\
+\pkg{Microsoft.Agents.AI.AzureAI} & 1.0.0-rc5 & Foundry Agents, older naming. Superseded. \\
+\pkg{Microsoft.Agents.AI.AzureAI.Persistent} & \mafcore{}-preview & Azure AI Persistent Agents. \\
+\pkg{Microsoft.Agents.AI.CopilotStudio} & \mafext{}-preview & Copilot Studio integration. \\
+\pkg{Microsoft.Agents.AI.A2A} & \mafcore{}-preview & Agent-to-Agent protocol client. \\
+\pkg{Microsoft.Agents.AI.AGUI} & \mafcore{}-preview & Agent-User Interaction protocol client. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================
+\section{Hosting --- prerelease}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.Hosting} & \mafcore{}-preview & General agent hosting. \\
+\pkg{Microsoft.Agents.AI.Hosting.OpenAI} & \mafcore{}-alpha & OpenAI Responses protocol hosting. Alpha --- expect breaking changes. \\
+\pkg{Microsoft.Agents.AI.Hosting.A2A} & \mafcore{}-preview & Hosting A2A agents. \\
+\pkg{Microsoft.Agents.AI.Hosting.A2A.AspNetCore} & \mafcore{}-preview & A2A hosting in ASP.NET Core. \\
+\pkg{Microsoft.Agents.AI.Hosting.AGUI.AspNetCore} & \mafcore{}-preview & AG-UI hosting in ASP.NET Core. \\
+\pkg{Microsoft.Agents.AI.Hosting.AzureFunctions} & \mafext{}-preview & Durable agent hosting on Azure Functions. \\
+\pkg{Microsoft.Agents.AI.Foundry.Hosting} & \mafext{}-preview & Foundry Hosted Agents. Chapter~\ref{ch:hosting}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warning}
+\index{namespaces!versus package names}
+The namespace and the package name are not always the same word.
+\code{using Microsoft.Agents.AI.Foundry.Hosting;} comes from the package of that
+name --- but it sits on the \mafext{} train, not the \mafcore{} one, so adding it
+to a solution otherwise pinned at \mafcore{} means adding a second version number.
+This is the most common cause of a confusing restore failure.
+\end{warning}
+
+% ============================================================
+\section{Execution, storage and governance --- prerelease}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.Harness} & \mafext{}-preview & \api{HarnessAgent}: a pre-configured agent for long-running tasks. Chapter~\ref{ch:harness}. \\
+\pkg{Microsoft.Agents.AI.Hyperlight} & \mafext{}-preview & Hyperlight-backed CodeAct --- sandboxed execution of model-generated code. \\
+\pkg{Microsoft.Agents.AI.DurableTask} & \mafext{}-preview & Distributed durable execution. Chapter~\ref{ch:hosting}. \\
+\pkg{Microsoft.Agents.AI.CosmosNoSql} & \mafext{}-preview & Cosmos DB NoSQL implementations of \api{ChatHistoryProvider} and \api{CheckpointStore}. \\
+\pkg{Microsoft.Agents.AI.FoundryMemory} & 1.0.0-preview & Foundry Memory integration. Chapter~\ref{ch:memory}. \\
+\pkg{Microsoft.Agents.AI.Purview} & \mafext{}-rc1 & Connecting generative AI apps to Microsoft Purview. \\
+\pkg{Microsoft.Agents.AI.Declarative} & \mafcore{}-rc1 & Declarative \emph{agents}, as distinct from declarative workflows. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+\pkg{Microsoft.Agents.AI.CosmosNoSql} is worth noting even if you never use
+Cosmos DB, because its description names the two storage abstractions the
+framework expects you to implement: \api{ChatHistoryProvider} and
+\api{CheckpointStore}. Chapter~\ref{ch:memory} implements the first against
+PostgreSQL; Chapter~\ref{ch:workflows-advanced} uses the second.
+\end{note}
+
+% ============================================================
+\section{Tooling}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.DevUI} & \mafcore{}-preview & Developer UI for inspecting agents. Chapter~\ref{ch:observability}. \\
+\pkg{Aspire.Hosting.AgentFramework.DevUI} & \mafext{}-preview & DevUI as an Aspire resource. \\
+\pkg{Microsoft.Agents.AI.ProjectTemplates} & 1.3.0-preview & \code{dotnet new} templates: an AI Agent Web API project. \\
+\pkg{Microsoft.Extensions.AI.Templates} & --- & Sibling package: AI chat web app templates with vector storage and ingestion. Not published by this account. \\
+\pkg{Microsoft.McpServer.ProjectTemplates} & --- & Sibling package: an MCP server template. Relevant to Chapter~\ref{ch:tools}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Installing the templates is worth doing before Chapter~\ref{ch:first-agent}, if
+only to see what Microsoft considers a default project shape.
+\S\ref{sec:templates} covers what they produce and why the book scaffolds by hand
+regardless:
+
+\begin{shellcmd}
+dotnet new install Microsoft.Agents.AI.ProjectTemplates::1.3.0-preview.1.26251.3
+dotnet new list agent
+\end{shellcmd}
+
+% ============================================================
+\section{Supporting packages}
+\label{sec:supporting}
+
+Not published by the Agent Framework account, but required by the samples.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Package} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Extensions.AI} & \api{IChatClient} and the provider abstraction. The layer below Agent Framework. \\
+\pkg{Microsoft.Extensions.AI.OpenAI} & \api{AsIChatClient} for OpenAI-family clients. \\
+\pkg{Microsoft.Extensions.AI.Ollama} & \api{OllamaChatClient}. Prerelease. Used throughout Parts~I and~II. \\
+\pkg{OllamaSharp} & Community alternative providing \api{OllamaApiClient}. Also implements \api{IChatClient}. \\
+\pkg{Azure.AI.OpenAI} & Azure OpenAI client. \\
+\pkg{Azure.Identity} & \api{DefaultAzureCredential} and friends. \\
+\pkg{Microsoft.Extensions.Configuration.UserSecrets} & Keeping endpoints out of source control. \\
+\pkg{Npgsql.EntityFrameworkCore.PostgreSQL} & Chapter~\ref{ch:memory}. \\
+\pkg{OpenTelemetry.Exporter.OpenTelemetryProtocol} & Chapter~\ref{ch:observability}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================
+\section{Keeping this appendix current}
+
+The list above will be wrong within a quarter. Rather than trusting it, generate
+your own:
+
+\begin{shellcmd}
+# Every package published by the Agent Framework account, newest first
+curl -s "https://azuresearch-usnc.nuget.org/query?q=owner:MicrosoftAgentFramework&take=100&prerelease=true" \
+  | jq -r '.data[] | "\(.id)\t\(.version)"' | sort
+\end{shellcmd}
+
+Run it before each chapter you work through, and diff against
+\code{Directory.Packages.props}. Two minutes of scripting removes an entire class
+of wasted afternoon.
+
+\begin{note}
+If you intend to publish anything derived from this book, automate the check in
+CI: a weekly job that restores against the latest available versions and reports
+build failures tells you which chapters have rotted before a reader does.
+\end{note}

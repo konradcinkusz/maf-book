@@ -1,0 +1,28 @@
+\chapter{Workflows: Durability and Control}
+\label{ch:workflows-advanced}
+
+\begin{quote}\itshape
+Killing a running workflow and having it finish correctly anyway.
+\end{quote}
+
+% -- OUTLINE (to write) ------------------------------------
+\section{Checkpointing}
+\subsection{What is captured, and what is not}
+\subsection{Where checkpoints live}
+
+\section{Resume}
+% Kill the process mid-run; resume to correct completion; prove it with a log
+
+\section{Human-in-the-loop ports}
+% Pause, emit a request, wait for an out-of-band decision, resume hours later
+% Expose the decision over a minimal API
+
+\section{Declarative workflows}
+\subsection{The same graph in YAML}
+\subsection{When declarative wins, and when it does not}
+\subsection{The Copilot Studio adjacency}
+
+\section{Worked example: document pipeline with approval gate}
+% ingest -> classify -> route -> validate -> HITL on low confidence -> persist
+
+\section{Summary}

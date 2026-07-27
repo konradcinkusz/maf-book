@@ -1,0 +1,20 @@
+name: Content request
+description: Suggest a topic, or point out something the book should cover.
+title: "[content] "
+labels: ["content"]
+body:
+  - type: textarea
+    id: topic
+    attributes:
+      label: What is missing
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters in practice
+      description: >
+        The book prioritises things that cause real problems in production over
+        completeness of API coverage. What goes wrong without this?
+    validations:
+      required: true

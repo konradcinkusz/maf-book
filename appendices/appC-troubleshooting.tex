@@ -1,0 +1,187 @@
+\chapter{Troubleshooting}
+\label{app:troubleshooting}
+
+Organised by \emph{symptom}, because that is what you have when you arrive here.
+
+% ============================================================
+\section{Package and restore}
+
+\subsection{``Package X does not exist''}
+
+Almost always the prerelease flag. A large fraction of the Agent Framework family
+carries a \code{-preview}, \code{-alpha} or \code{-rc} suffix even though the core
+is GA (Appendix~\ref{app:packages}). NuGet will not resolve those unless you ask
+it to.
+
+\begin{shellcmd}
+dotnet add package Microsoft.Extensions.AI.Ollama --prerelease
+\end{shellcmd}
+
+In Visual Studio: \emph{Include prerelease} in the NuGet Package Manager.
+
+\subsection{``Version conflict'' after adding a hosting or harness package}
+
+You have crossed release trains. Core sits at \mafcore{}; the harness, durable
+execution and Foundry hosting sit at \mafext{}. This is expected --- pin both
+numbers rather than trying to force one.
+
+If a transitive conflict follows, \code{CentralPackageTransitivePinningEnabled}
+in \code{Directory.Packages.props} resolves most of them by pinning the
+transitive graph to your declared versions.
+
+\subsection{``NU1008: Projects that use CPM should not define version''}
+
+A \code{PackageReference} still carries a \code{Version} attribute. Central
+Package Management forbids it. Strip versions from every \code{.csproj}; they
+belong only in \code{Directory.Packages.props}.
+
+\subsection{Build fails only on prerelease packages after enabling \texttt{TreatWarningsAsErrors}}
+
+Preview packages ship analyzers and experimental-API attributes that emit
+warnings. Rather than abandoning warnings-as-errors for the solution, suppress
+the specific diagnostic in the one project that needs it, and leave a comment
+saying which package caused it and when to remove the suppression.
+
+% ============================================================
+\section{Authentication}
+
+\subsection{\texttt{DefaultAzureCredential} fails with no obvious cause}
+
+It walks a chain of credential sources and reports the aggregate failure, which
+buries the useful part. Narrow it:
+
+\begin{shellcmd}
+az login
+az account show
+\end{shellcmd}
+
+If the CLI session is valid but the credential still fails, force a single source
+--- \api{AzureCliCredential} on a dev machine --- so the error becomes specific.
+Then check role assignment on the resource: a valid identity with no data-plane
+role fails at the first call, not at construction.
+
+\subsection{401 or 403 on the first agent run, not at startup}
+
+Expected. Client construction does not authenticate; the first request does. The
+failure surfaces inside \api{RunAsync} rather than where the client was built.
+
+\subsection{Secrets are in \texttt{appsettings.json}}
+
+Move them. \code{dotnet user-secrets init} then \code{dotnet user-secrets set}.
+See \S\ref{sec:swap} in Chapter~\ref{ch:first-agent}.
+
+% ============================================================
+\section{The agent will not call your tool}
+\label{sec:tb-no-tool-call}
+
+The most confusing failure in the framework, because \textbf{nothing errors}. The
+agent answers politely and simply never calls the tool. Work through these in
+order --- the order matters, because most people start at step four and lose an
+afternoon.
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Does the model support function calling at all?} Many small local
+      models do not. Swap to a model documented as supporting tool use ---
+      \code{llama3.2} or \code{qwen3:4b} --- and retest before changing anything
+      else.
+\item \textbf{Is function-invocation middleware wired?} Some clients need
+      \api{UseFunctionInvocation} explicitly. See
+      Appendix~\ref{app:providers}, Listing~\ref{lst:prov-funcinvoke}.
+\item \textbf{Was the tool actually registered?} Break after agent construction
+      and inspect the tool collection. A tool that is not there cannot be called.
+\item \textbf{Is the description good enough?} Only now. The description is the
+      model's entire basis for selection; ``gets data'' will not be selected over
+      a plausible-looking alternative. Chapter~\ref{ch:tools} measures how much
+      this matters.
+\item \textbf{Is the parameter schema too complex?} Deeply nested objects degrade
+      selection accuracy sharply on smaller models. Flatten and retest.
+\end{enumerate}
+
+% ============================================================
+\section{Conversation and state}
+
+\subsection{The agent forgets everything between turns}
+
+You are not passing a thread. \api{RunAsync} without an \api{AgentThread} creates
+a throwaway one that lives only for that call. See \S\ref{sec:threads}.
+
+\subsection{Deserialising a thread fails, or behaves oddly}
+
+The thread must be resumed by an \emph{identically configured} agent instance.
+If construction differs between the process that saved and the process that
+loads --- a different model, different instructions, a different provider --- the
+failure may be silent rather than thrown. Register the agent once in DI and build
+it from configuration that cannot drift.
+
+\subsection{Serialised threads are far smaller than expected}
+
+The provider is storing conversations server-side, so the serialised thread
+contains an identifier rather than the messages. This is correct behaviour, not
+data loss --- but it means your backup contains a pointer to state you do not
+own, and that the remote thread is yours to delete.
+
+\subsection{Responses degrade during a long tool-calling chain}
+
+Context window pressure. Confirm by logging token counts per turn before
+reaching for prompt changes. Chapter~\ref{ch:memory} covers automatic compaction;
+be aware that compaction is lossy by design and can remove something you needed.
+
+% ============================================================
+\section{Workflows}
+
+\subsection{Type mismatch between executors}
+
+Messages are typed and edges enforce it. Where the compile-time route generators
+are in use (\pkg{Microsoft.Agents.AI.Workflows.Generators}) this surfaces at
+build time; without them it surfaces at run time, which is worse. Prefer the
+generators.
+
+\subsection{Resume produces a different result than an uninterrupted run}
+
+Something outside the checkpoint is carrying state --- a static field, a cached
+client, an external store mutated between checkpoint and resume. Checkpointing
+captures workflow state, not the state of everything your executors happen to
+touch. Make executors take their dependencies explicitly.
+
+\subsection{A human-in-the-loop workflow never resumes}
+
+The response is not reaching the port, or the workflow instance being resumed is
+not the one that paused. Log the workflow instance identifier on both sides
+before debugging anything else.
+
+% ============================================================
+\section{Observability}
+
+\subsection{No traces appear}
+
+In order: is the exporter configured and pointing at a reachable endpoint; is the
+activity source registered; is sampling discarding them; is the process exiting
+before the exporter flushes? The last one accounts for most console-app cases ---
+dispose the tracer provider, or add a delay, before the process ends.
+
+\subsection{Token counts are missing or wrong}
+
+Providers report usage differently, and some do not report it on streaming
+responses at all. Verify per provider before building cost calculations on top.
+See Appendix~\ref{app:providers}.
+
+\subsection{Traces appear but multi-agent runs are unreadable}
+
+Spans are there but the parent-child relationship is lost, usually because
+context is not flowing across an async boundary or a queue. Check that ambient
+activity context propagates before concluding the instrumentation is inadequate.
+
+% ============================================================
+\section{When the answer is not here}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \code{github.com/microsoft/agent-framework/releases} --- read the notes for
+      every version between yours and current. Breaking changes are flagged
+      \code{[BREAKING]} in the title.
+\item \code{github.com/microsoft/agent-framework/discussions}
+\item The \code{dotnet/samples} directory --- a working sample is usually faster
+      than a documentation page.
+\item The framework is open source. When behaviour contradicts documentation, the
+      source settles it, and given the release cadence the documentation is
+      sometimes the thing that is out of date.
+\end{itemize}

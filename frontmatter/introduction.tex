@@ -1,0 +1,175 @@
+\chapter*{Introduction}
+\addcontentsline{toc}{chapter}{Introduction}
+\markboth{INTRODUCTION}{INTRODUCTION}
+
+\section*{Who this book is for}
+
+This book is written for the working .NET engineer --- someone who has shipped
+ASP.NET Core services, knows what a DI container is for, has argued about
+where the boundary between application and infrastructure belongs, and is now
+being asked to put an agent into production.
+
+It assumes you are comfortable with C\# 12 or later, \code{async}/\code{await},
+dependency injection, and Entity Framework Core. It does not assume you have
+built an agent before, and it does not assume you have read a paper about
+large language models.
+
+It also assumes something less common: that you are sceptical. Most agent
+material published since 2023 demonstrates that a thing is \emph{possible}
+without ever asking whether it is \emph{reliable}, \emph{observable}, or
+\emph{affordable}. A demo that calls three tools and prints a paragraph proves
+almost nothing about a system that must run unattended for six hours and hand
+work to a human when it is unsure. This book is organised around the second
+kind of system.
+
+\section*{What this book is not}
+
+\begin{itemize}[leftmargin=1.4em]
+  \item It is not an introduction to large language models. Chapter~\ref{ch:landscape}
+        assumes you know roughly what a token, a context window, and a tool call are.
+  \item It is not a Semantic Kernel book. Semantic Kernel appears only where it
+        explains why an Agent Framework abstraction looks the way it does.
+  \item It is not a Python book. The concepts are shared across both runtimes,
+        and Python appears twice --- once for cross-runtime interoperability in
+        Chapter~\ref{ch:hosting}, once for a feature that has not yet reached .NET
+        in Chapter~\ref{ch:harness} --- but every listing that matters is C\#.
+  \item It is not prompt engineering. There is exactly one section on writing
+        instructions, and it exists because tool descriptions measurably change
+        tool-selection accuracy, which is an engineering concern rather than a
+        stylistic one.
+\end{itemize}
+
+\section*{Why this book exists}
+
+Microsoft Agent Framework reached 1.0 General Availability on 2~April~2026. It is
+the convergence of two projects that had accumulated a large amount of field
+experience separately: Semantic Kernel's enterprise plumbing and AutoGen's
+multi-agent orchestration research. The merged result ships with stable APIs, a
+long-term support commitment, and the same programming model across .NET and Python.
+
+That milestone changed the question. Before GA, the interesting question was
+\emph{what will this become}. After GA, the interesting question is \emph{how do
+you run it}. The documentation answers the first question well and the second
+question thinly, because production experience takes time to accumulate and the
+framework is only a few months old.
+
+This book is an attempt to write down the second answer while the framework is
+new enough that the answer is still worth writing down.
+
+\section*{How the book is organised}
+
+The book has four parts.
+
+\textbf{Part I --- Foundations} (Chapters~\ref{ch:landscape}--\ref{ch:memory})
+covers the single-agent surface: where Agent Framework sits in the stack, how an
+agent is constructed and run, how tools are bound, and how conversation state and
+memory are persisted. If you read only four chapters, read these.
+
+\textbf{Part II --- Workflows} (Chapters~\ref{ch:workflows-basics}--\ref{ch:orchestration})
+covers what distinguishes Agent Framework from the majority of agent libraries:
+a strongly typed, graph-based, checkpointable execution model, and the
+orchestration patterns built on top of it. This is the longest and most
+important part of the book.
+
+\textbf{Part III --- Production} (Chapters~\ref{ch:observability}--\ref{ch:harness})
+covers middleware, OpenTelemetry, evaluation, hosting, durability, cross-runtime
+interoperability, and the agent harness layer added after GA.
+
+\textbf{Part IV --- Capstone} (Chapter~\ref{ch:capstone}) builds one system that
+uses the whole of the preceding material, and is deliberately the only chapter
+with no new API surface in it.
+
+Chapters are independent enough to read out of order after Part~I, but
+Chapters~\ref{ch:workflows-basics} and~\ref{ch:workflows-advanced} must be read
+in sequence.
+
+\section*{Conventions}
+
+Four kinds of callout appear throughout.
+
+\begin{note}
+Background, context, or a design rationale. Skippable on a first pass.
+\end{note}
+
+\begin{warning}
+A failure mode that will cost you an afternoon if you meet it unprepared.
+Not skippable.
+\end{warning}
+
+\begin{versionbox}
+Applies to a preview or alpha surface, or to behaviour that is likely to change
+between minor versions. Check the release notes before relying on anything
+marked this way.
+\end{versionbox}
+
+\begin{verifybox}
+A listing whose exact signature has been transcribed from documentation or
+release notes rather than compiled by the author against the pinned version.
+Compile it before you copy it into anything that matters.
+\end{verifybox}
+
+Inline, \pkg{Microsoft.Agents.AI} denotes a NuGet package, \api{AsAIAgent} an
+API member, and \code{dotnet build} a literal command or file path.
+
+\section*{On versions, and why this book will rot}
+
+Agent Framework does not ship as one package on one version line. It ships as a
+family of roughly three dozen packages moving in several \emph{release trains},
+and at the time of writing three trains were live simultaneously: the core train
+(\pkg{Microsoft.Agents.AI}, \pkg{Microsoft.Agents.AI.OpenAI},
+\pkg{Microsoft.Agents.AI.Workflows}) at \mafcore{}; an extensions train
+carrying the harness, durable execution and Foundry hosting at \mafext{}; and a
+handful of packages stranded on older previews. Packages within a train move
+together; packages across trains do not. Assuming one version applies to
+everything is the first mistake to avoid.
+
+Every listing in this book is written against the versions recorded on the title
+page, and every sample project pins them explicitly through Central Package
+Management. Where a feature is newer than GA --- the agent harness, hosted
+agents, declarative workflows --- it is marked with a \emph{Version sensitive}
+callout.
+
+The honest position is this: the conceptual material in Parts~I and~II will
+outlive several minor versions, because agents, tools, executors and edges are
+the framework's load-bearing abstractions and Microsoft has committed to their
+stability. The wiring details in Part~III will not. Treat the code as a starting
+point that you compile, not as scripture.
+
+\section*{The companion repository}
+
+Every listing longer than a few lines exists as a compiling project at:
+
+\begin{center}
+\code{github.com/konradcinkusz/maf-book-samples}
+\end{center}
+
+The repository is organised by chapter, uses one \code{Directory.Packages.props}
+for all pinned versions, and --- with one deliberate exception in
+Chapter~\ref{ch:hosting} --- every sample runs against a locally hosted model
+with no cloud subscription required. That constraint is not an accessibility
+gesture; it is how the samples stay cheap enough to run repeatedly while you are
+learning, and it is a constraint the official samples do not meet.
+
+\section*{Environment assumptions}
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \dotnetver{} SDK or later.
+  \item \vsver{}, JetBrains Rider, or VS~Code with the C\# Dev Kit. Screenshots
+        in this book are taken from \vsver{}; the equivalent operations exist in
+        the other two.
+  \item Docker, for the samples in Chapters~\ref{ch:memory} and~\ref{ch:hosting}.
+  \item A locally served model with tool-calling support, for Parts~I and~II.
+  \item An Azure subscription with Microsoft Foundry access, for
+        Chapters~\ref{ch:hosting} and~\ref{ch:capstone} only.
+\end{itemize}
+
+Chapter~\ref{ch:first-agent} walks the setup end to end and does not assume any
+of the above is already installed.
+
+\vspace{1.5em}
+\noindent\rule{\linewidth}{0.4pt}
+\vspace{0.5em}
+
+\noindent\emph{Konrad Cinkusz\\ Mutxamel, \today}
+
+\cleardoublepage

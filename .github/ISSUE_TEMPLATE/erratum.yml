@@ -1,0 +1,36 @@
+name: Erratum
+description: Something in the book is wrong, out of date, or does not compile.
+title: "[erratum] "
+labels: ["erratum"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: Chapter and section, or listing label.
+      placeholder: "Chapter 3, Listing lst:mcp-client"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - API has changed since publication
+        - Listing does not compile
+        - Factually incorrect
+        - Package or version is out of date
+        - Typo or formatting
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Package versions you are using
+      placeholder: "Microsoft.Agents.AI 1.10.0, ModelContextProtocol 1.4.0"
+  - type: textarea
+    id: detail
+    attributes:
+      label: What the book says, and what is actually true
+    validations:
+      required: true

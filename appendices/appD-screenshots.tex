@@ -1,0 +1,92 @@
+\chapter{Screenshot Manifest}
+\label{app:screenshots}
+
+Every figure in this book that requires a capture from a running tool. Entries
+disappear from the list at the end of this appendix automatically once the
+corresponding file exists in \code{figures/screenshots/}.
+
+% ============================================================
+\section{How the mechanism works}
+
+In the source, a pending capture is written as:
+
+\begin{yamlcode}[caption={Requesting a screenshot}, label={lst:needscreenshot}]
+\needscreenshot{vs-about-dialog}%
+{Caption printed under the figure}%
+{Precise description of what to capture.}
+\end{yamlcode}
+
+While \code{figures/screenshots/vs-about-dialog.png} is absent, a dashed
+placeholder is printed in place carrying the capture instructions, and the request
+is added to the list below. Drop the file in with the matching name and it is
+included automatically --- no edit to the chapter is required.
+
+To see what is outstanding without building the PDF:
+
+\begin{shellcmd}
+make shots
+\end{shellcmd}
+
+% ============================================================
+\section{Capture conventions}
+
+\begin{itemize}[leftmargin=1.4em]
+\item PNG, light theme, at least 1600\,px wide.
+\item Crop tightly to the relevant dialog or pane. A full-desktop capture scaled
+      to a 17\,cm page is illegible, and illegible screenshots are worse than no
+      screenshot.
+\item Editor font at 100\% or larger. Read the capture at print size before
+      accepting it.
+\item Where a pane relationship is the point --- editor plus Solution Explorer,
+      say --- include both, but nothing else.
+\item Consistent window chrome and theme across the whole book. Decide once.
+\item Filename must match the key exactly, including hyphens.
+\end{itemize}
+
+% ============================================================
+\section{Redaction checklist}
+
+Run through this before accepting any capture. Screenshots are the most common
+route by which private information reaches a published technical book, because
+the author is looking at the feature rather than the frame.
+
+\begin{itemize}[leftmargin=1.4em]
+\item No tenant names, subscription IDs, resource group names, or endpoint hosts
+      that identify a real deployment.
+\item No API keys, tokens, or connection strings --- including in a partially
+      scrolled \code{secrets.json} or an environment variable pane.
+\item No personal file paths. \code{C:\textbackslash Users\textbackslash yourname\textbackslash{}}
+      appears in more title bars than you expect.
+\item No email addresses, account names, or profile photographs in the IDE
+      account area. Sign out, or crop it.
+\item No unrelated open documents, tabs, or notifications.
+\item No customer or employer identifiers in recent-files lists, window titles,
+      or Git branch names.
+\end{itemize}
+
+\begin{warning}
+Redact by \emph{recapturing}, not by drawing a black box over the image. Black
+boxes advertise that something was there, and a surprising number of them are
+applied at a layer that leaves the original pixels in the file.
+\end{warning}
+
+% ============================================================
+\section{Working practice}
+
+Two habits worth adopting early.
+
+\textbf{Capture as you go, not at the end.} The screenshots in this book are
+taken from a solution being built chapter by chapter. Recreating the exact state
+of a Chapter~\ref{ch:memory} debugging session three months later, in order to
+photograph it, is an afternoon you will resent.
+
+\textbf{Recapture when the version changes.} A screenshot of a dialog from an IDE
+two versions old is a stronger signal that the book is stale than any prose
+disclaimer. Figure~\ref{fig:vs-about-dialog} in Chapter~\ref{ch:landscape} exists
+precisely so a reader can tell which build everything else was taken against ---
+which means it must be recaptured first when you upgrade.
+
+% ============================================================
+\section{Outstanding captures}
+
+\listofshots

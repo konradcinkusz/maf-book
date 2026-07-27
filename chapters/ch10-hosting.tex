@@ -1,0 +1,33 @@
+\chapter{Hosting, Durability and A2A}
+\label{ch:hosting}
+
+\begin{quote}\itshape
+From a console app to something that survives a restart and answers on a URL.
+\end{quote}
+
+% -- OUTLINE (to write) ------------------------------------
+\section{Hosting an agent in ASP.NET Core}
+
+\section{.NET Aspire integration}
+% AppHost: agent service + PostgreSQL + OTLP collector + Blazor front end
+% SCREENSHOT: aspire-apphost-resources
+
+\section{The durable extension}
+% Durable Task-backed long-running agents
+% How this differs from workflow checkpointing: durability of the host, not the graph
+
+\section{Agent-to-Agent protocol}
+\subsection{The protocol}
+\subsection{Hosting an A2A agent in ASP.NET Core}
+\subsection{Worked example: a .NET agent delegating to a Python agent}
+
+\section{Foundry Hosted Agents}
+\subsection{Scale to zero, and resuming with the filesystem intact}
+\subsection{Per-session VM-isolated sandboxes}
+\subsection{Measuring cold start}
+
+\section{Security}
+% Sandboxing, shell execution risk, tool approval as a control,
+% prompt injection through tool results and MCP servers
+
+\section{Summary}

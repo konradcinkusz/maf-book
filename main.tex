@@ -1,0 +1,65 @@
+% ============================================================
+%  Microsoft Agent Framework for .NET Engineers
+%  Konrad Cinkusz
+%
+%  Build:  latexmk -pdf main.tex
+%          (or: pdflatex main && makeindex main && pdflatex main)
+%
+%  To work on one chapter only, uncomment \includeonly below.
+% ============================================================
+
+\documentclass[11pt,twoside,openright]{book}
+
+\input{preamble}
+
+% \includeonly{chapters/ch01-landscape}
+
+\begin{document}
+
+% ------------------------------------------------------------
+\frontmatter
+
+\input{frontmatter/titlepage}
+
+\tableofcontents
+\listoffigures
+
+\input{frontmatter/introduction}
+
+% ------------------------------------------------------------
+\mainmatter
+
+\part{Foundations}
+\include{chapters/ch01-landscape}
+\include{chapters/ch02-first-agent}
+\include{chapters/ch03-tools}
+\include{chapters/ch04-memory}
+
+\part{Workflows}
+\include{chapters/ch05-workflows-basics}
+\include{chapters/ch06-workflows-advanced}
+\include{chapters/ch07-orchestration}
+
+\part{Production}
+\include{chapters/ch08-middleware-observability}
+\include{chapters/ch09-evaluation}
+\include{chapters/ch10-hosting}
+\include{chapters/ch11-harness}
+
+\part{Capstone}
+\include{chapters/ch12-capstone}
+
+% ------------------------------------------------------------
+\appendix
+\part{Appendices}
+\include{appendices/appA-packages}
+\include{appendices/appB-providers}
+\include{appendices/appC-troubleshooting}
+\include{appendices/appD-screenshots}
+
+% ------------------------------------------------------------
+\backmatter
+
+\printindex
+
+\end{document}

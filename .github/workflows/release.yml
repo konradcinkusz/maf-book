@@ -1,0 +1,83 @@
+name: Release
+
+# Builds the book and attaches the PDF to a GitHub Release.
+# Triggered by pushing a version tag:
+#
+#   git tag -a v0.3.0 -m "Chapters 1-3 and appendices"
+#   git push origin v0.3.0
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build a release for'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PDF_NAME: MAF-for-dotnet-Engineers
+
+jobs:
+  build:
+    name: Compile PDF
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Compile with latexmk
+        uses: xu-cheng/latex-action@v4
+        with:
+          root_file: main.tex
+          args: -pdf -interaction=nonstopmode -halt-on-error -file-line-error
+
+      - name: Fail on unresolved references
+        run: |
+          if grep -q "Reference.*undefined" main.log; then
+            echo "::error::Refusing to release with unresolved cross-references."
+            grep "Reference.*undefined" main.log | sort -u
+            exit 1
+          fi
+
+      - name: Name the artefact after the tag
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mv main.pdf "${PDF_NAME}-${TAG}.pdf"
+          cp "${PDF_NAME}-${TAG}.pdf" "${PDF_NAME}.pdf"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-pdf
+          path: '*.pdf'
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write        # scoped to this job only, not the whole workflow
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-pdf
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            *.pdf
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Draft build of *Microsoft Agent Framework for .NET Engineers*.
+
+            This is a work in progress. Listings marked **"Compile before you
+            trust this"** in the text have been transcribed from documentation
+            rather than compiled against the SDK. Package versions are pinned to
+            a dated snapshot — see Appendix A.

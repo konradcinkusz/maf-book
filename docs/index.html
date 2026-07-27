@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Microsoft Agent Framework for .NET Engineers</title>
+<meta name="description" content="A practitioner's guide to Microsoft Agent Framework 1.0 for .NET: agents, tools, MCP, graph workflows, orchestration, observability and hosting. Free PDF, built from LaTeX by GitHub Actions.">
+<meta property="og:title" content="Microsoft Agent Framework for .NET Engineers">
+<meta property="og:description" content="Agents, tools, workflows, orchestration and observability on the 1.0 GA foundation. Free PDF.">
+<meta property="og:type" content="website">
+<style>
+/* Palette lifted directly from the book's preamble.tex, so the site and the
+   PDF share one identity rather than two. */
+:root{
+  --ink:      #1F4E79;   /* mafblue  */
+  --teal:     #0E7C7B;   /* mafteal  */
+  --amber:    #B26A00;   /* mafamber */
+  --red:      #9B2C2C;   /* mafred   */
+  --grey:     #5A5A5A;   /* mafgrey  */
+  --paper:    #FFFFFF;
+  --light:    #F4F6F8;   /* maflight */
+  --rule:     #D8DEE4;   /* codeframe */
+  --text:     #17202A;
+
+  --serif: 'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif;
+  --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  --mono: 'Cascadia Mono','JetBrains Mono',Consolas,'DejaVu Sans Mono',monospace;
+
+  --measure: 34rem;
+  --gutter: clamp(1.25rem, 5vw, 4rem);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#12171D; --light:#1A2129; --rule:#2C3945; --text:#E6EBF0;
+    --ink:#7FB2E0; --teal:#4FC3C1; --amber:#E0A64B; --red:#E08A8A; --grey:#98A5B3;
+  }
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{animation:none!important;transition:none!important}
+}
+body{
+  background:var(--paper);color:var(--text);
+  font-family:var(--sans);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ink)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--amber);outline-offset:3px}
+.wrap{max-width:62rem;margin:0 auto;padding-inline:var(--gutter)}
+
+/* ── masthead ───────────────────────────────────────────────── */
+header{border-bottom:1px solid var(--rule)}
+.masthead{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:baseline;
+  padding-block:1rem;font-family:var(--mono);font-size:.8rem}
+.masthead .mark{font-weight:700;letter-spacing:.04em;color:var(--ink)}
+.masthead nav{margin-left:auto;display:flex;gap:1.25rem}
+.masthead nav a{color:var(--grey);text-decoration:none}
+.masthead nav a:hover{color:var(--ink);text-decoration:underline}
+
+/* ── hero ───────────────────────────────────────────────────── */
+.hero{padding-block:clamp(3rem,9vw,6rem) 3rem}
+.eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--teal);margin-bottom:1.25rem}
+h1{font-family:var(--serif);font-weight:600;line-height:1.05;
+  font-size:clamp(2.4rem,6.5vw,4rem);letter-spacing:-.015em;color:var(--ink)}
+h1 .sub{display:block;font-size:.5em;color:var(--text);margin-top:.4em;
+  letter-spacing:0;font-weight:400}
+.lede{max-width:var(--measure);margin-top:1.75rem;font-size:1.075rem}
+.lede + .lede{margin-top:1rem}
+.caveat{border-left:3px solid var(--amber);padding-left:1rem;color:var(--grey);
+  font-size:.95rem}
+
+.actions{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2.25rem}
+.btn{display:inline-block;padding:.7rem 1.4rem;border-radius:2px;
+  font-family:var(--mono);font-size:.85rem;text-decoration:none;
+  border:1px solid var(--ink);transition:background .15s,color .15s}
+.btn.primary{background:var(--ink);color:var(--paper)}
+.btn.primary:hover{background:transparent;color:var(--ink)}
+.btn.ghost{color:var(--ink)}
+.btn.ghost:hover{background:var(--light)}
+
+/* ── sections ───────────────────────────────────────────────── */
+section{padding-block:3.25rem;border-top:1px solid var(--rule)}
+h2{font-family:var(--serif);font-size:1.5rem;font-weight:600;color:var(--ink);
+  margin-bottom:.4rem}
+h2 + .note{color:var(--grey);font-size:.95rem;max-width:var(--measure);
+  margin-bottom:1.75rem}
+
+/* ── ledger: the signature element ──────────────────────────── */
+.ledger{font-family:var(--mono);font-size:.82rem;border:1px solid var(--rule);
+  background:var(--light);border-radius:2px;overflow:hidden}
+.ledger-head{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+  padding:.6rem 1rem;background:var(--paper);border-bottom:1px solid var(--rule);
+  color:var(--grey)}
+.ledger table{width:100%;border-collapse:collapse}
+.ledger td{padding:.42rem 1rem;vertical-align:top}
+.ledger tr + tr td{border-top:1px solid var(--rule)}
+.ledger td:first-child{color:var(--text)}
+.ledger td:last-child{text-align:right;white-space:nowrap;color:var(--grey)}
+.tag{display:inline-block;padding:.05rem .45rem;border-radius:2px;font-size:.75rem;
+  border:1px solid currentColor}
+.tag.ga{color:var(--teal)}
+.tag.pre{color:var(--amber)}
+.tag.old{color:var(--red)}
+
+/* ── contents ───────────────────────────────────────────────── */
+.parts{display:grid;gap:1.5rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr))}
+.part h3{font-family:var(--mono);font-size:.78rem;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--teal);margin-bottom:.6rem;font-weight:500}
+.part ol{list-style:none;font-size:.94rem}
+.part li{display:flex;gap:.6rem;padding-block:.28rem;align-items:baseline}
+.part .n{font-family:var(--mono);font-size:.78rem;color:var(--grey);min-width:1.3rem}
+.done{color:var(--text)}
+.todo{color:var(--grey)}
+.done::after{content:"written";font-family:var(--mono);font-size:.7rem;
+  color:var(--teal);margin-left:.5rem;white-space:nowrap}
+
+/* ── prose lists ────────────────────────────────────────────── */
+.cols{display:grid;gap:1.5rem 2.5rem;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));
+  max-width:52rem}
+.cols h3{font-size:1rem;margin-bottom:.35rem;color:var(--text)}
+.cols p{font-size:.94rem;color:var(--grey)}
+code{font-family:var(--mono);font-size:.88em;background:var(--light);
+  padding:.08em .35em;border-radius:2px}
+
+footer{border-top:1px solid var(--rule);padding-block:2rem 3rem;
+  font-family:var(--mono);font-size:.78rem;color:var(--grey)}
+footer a{color:var(--grey)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap masthead">
+    <span class="mark">MAF&nbsp;/&nbsp;.NET</span>
+    <nav>
+      <a href="#contents">Contents</a>
+      <a href="#status">Status</a>
+      <a href="#contribute">Contribute</a>
+      <a href="https://github.com/konradcinkusz/maf-book">Source</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+  <div class="hero">
+    <p class="eyebrow">Draft &middot; work in progress</p>
+    <h1>Microsoft Agent Framework
+      <span class="sub">for .NET Engineers</span></h1>
+
+    <p class="lede">
+      Agents, tools, MCP, graph workflows, orchestration and observability on the
+      1.0 GA foundation. Written for engineers who have shipped ASP.NET Core
+      services and are now being asked to put an agent into production.
+    </p>
+
+    <p class="lede caveat">
+      This book will be wrong within a quarter, and it says so in the
+      introduction. The framework ships on several release trains at once, and
+      names have changed between preview and GA. Every listing transcribed from
+      documentation rather than compiled carries a visible
+      <em>compile before you trust this</em> marker, and the count is published
+      on every build.
+    </p>
+
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/konradcinkusz/maf-book/releases/latest/download/MAF-for-dotnet-Engineers.pdf">Download the PDF</a>
+      <a class="btn ghost" href="https://github.com/konradcinkusz/maf-book">Read the source</a>
+    </div>
+  </div>
+
+  <section id="status">
+    <h2>Pinned versions</h2>
+    <p class="note">
+      The framework publishes roughly three dozen packages moving in separate
+      release trains. A single version property does not work. This is the
+      snapshot the book is written against.
+    </p>
+
+    <div class="ledger">
+      <div class="ledger-head">
+        <span>appendix a &mdash; package reference</span>
+        <span>verified july 2026</span>
+      </div>
+      <table>
+        <tbody>
+          <tr>
+            <td>Microsoft.Agents.AI &middot; .OpenAI &middot; .Workflows</td>
+            <td>1.10.0 <span class="tag ga">stable</span></td>
+          </tr>
+          <tr>
+            <td>Workflows.Generators &middot; Workflows.Declarative</td>
+            <td>1.10.0 <span class="tag ga">stable</span></td>
+          </tr>
+          <tr>
+            <td>Harness &middot; Hyperlight &middot; DurableTask &middot; Foundry.Hosting</td>
+            <td>1.6.2 <span class="tag pre">preview</span></td>
+          </tr>
+          <tr>
+            <td>ModelContextProtocol</td>
+            <td>1.4.0 <span class="tag ga">stable</span></td>
+          </tr>
+          <tr>
+            <td>Microsoft.Agents.AI.AzureAI</td>
+            <td>1.0.0-rc5 <span class="tag old">stranded</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="contents">
+    <h2>Contents</h2>
+    <p class="note">
+      Four parts. Chapters marked <em>written</em> are complete in the current
+      draft; the rest exist as outlines and compile as part of the book.
+    </p>
+
+    <div class="parts">
+      <div class="part">
+        <h3>I &middot; Foundations</h3>
+        <ol>
+          <li><span class="n">1</span><span class="done">The Landscape</span></li>
+          <li><span class="n">2</span><span class="done">Your First Agent</span></li>
+          <li><span class="n">3</span><span class="done">Tools, MCP and Skills</span></li>
+          <li><span class="n">4</span><span class="todo">Memory, Context and State</span></li>
+        </ol>
+      </div>
+      <div class="part">
+        <h3>II &middot; Workflows</h3>
+        <ol>
+          <li><span class="n">5</span><span class="todo">Executors and Edges</span></li>
+          <li><span class="n">6</span><span class="todo">Durability and Control</span></li>
+          <li><span class="n">7</span><span class="todo">Multi-Agent Orchestration</span></li>
+        </ol>
+      </div>
+      <div class="part">
+        <h3>III &middot; Production</h3>
+        <ol>
+          <li><span class="n">8</span><span class="todo">Middleware and Observability</span></li>
+          <li><span class="n">9</span><span class="todo">Evaluation</span></li>
+          <li><span class="n">10</span><span class="todo">Hosting, Durability and A2A</span></li>
+          <li><span class="n">11</span><span class="todo">The Agent Harness</span></li>
+        </ol>
+      </div>
+      <div class="part">
+        <h3>IV &middot; Capstone &amp; appendices</h3>
+        <ol>
+          <li><span class="n">12</span><span class="todo">Capstone</span></li>
+          <li><span class="n">A</span><span class="done">Packages and Versions</span></li>
+          <li><span class="n">B</span><span class="done">Provider Matrix</span></li>
+          <li><span class="n">C</span><span class="done">Troubleshooting</span></li>
+          <li><span class="n">D</span><span class="done">Screenshot Manifest</span></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How it is built</h2>
+    <p class="note">
+      The book is LaTeX. Nothing is hand-assembled, so a broken listing cannot
+      reach a release.
+    </p>
+    <div class="cols">
+      <div>
+        <h3>Every push and pull request</h3>
+        <p>Compiles the book, fails on unresolved cross-references, and publishes
+        a summary listing the screenshots still outstanding and the listings not
+        yet compiled against the SDK.</p>
+      </div>
+      <div>
+        <h3>Every version tag</h3>
+        <p>Builds the PDF and attaches it to a GitHub Release. Tag
+        <code>v0.3.0</code>, and the download link above points at it.</p>
+      </div>
+      <div>
+        <h3>Build it yourself</h3>
+        <p><code>latexmk -pdf main.tex</code>. Optional font packages degrade
+        gracefully, so a minimal TeX installation is enough.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="contribute">
+    <h2>Corrections wanted</h2>
+    <p class="note">
+      The framework moves faster than the book. If a listing no longer compiles,
+      a package has moved train, or an API has been renamed again, that is worth
+      an issue &mdash; it is the most useful contribution this project can
+      receive.
+    </p>
+    <div class="actions">
+      <a class="btn ghost" href="https://github.com/konradcinkusz/maf-book/issues/new?template=erratum.yml">File an erratum</a>
+      <a class="btn ghost" href="https://github.com/konradcinkusz/maf-book/blob/main/CONTRIBUTING.md">Contributing guide</a>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    Text licensed CC&nbsp;BY-NC-SA&nbsp;4.0 &middot; code samples and build
+    tooling MIT &middot;
+    <a href="https://github.com/konradcinkusz">konradcinkusz</a> &middot;
+    not affiliated with Microsoft
+  </div>
+</footer>
+
+</body>
+</html>

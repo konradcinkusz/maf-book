@@ -1,0 +1,578 @@
+\chapter{Tools, MCP and Skills}
+\label{ch:tools}
+
+\begin{quote}
+\itshape
+Giving an agent the ability to act, and the ability to be stopped before it does.
+\end{quote}
+
+\noindent
+An agent without tools is a chat endpoint with a system prompt. Tools are what
+make it an agent, and they are also where most of the risk lives --- a tool call
+is the point at which a probabilistic system reaches into a deterministic one and
+changes something.
+
+This chapter covers four ways to give an agent capabilities: C\# methods, Model
+Context Protocol servers, other agents, and skills. It also covers the mechanism
+for putting a human in front of any of them.
+
+\begin{verifybox}
+As in Chapter~\ref{ch:first-agent}, the listings here are transcribed from
+Microsoft documentation and published samples rather than compiled by the author
+against \mafcore{}. The MCP client construction in \S\ref{sec:mcp-client} in
+particular has two forms in circulation. Compile before you copy.
+\end{verifybox}
+
+% ============================================================
+\section{A C\# method becomes a tool}
+\label{sec:function-tools}
+\index{AIFunctionFactory@\texttt{AIFunctionFactory}}
+
+\api{AIFunctionFactory.Create} turns a method into something an agent can call.
+The method can be static or instance, sync or async.
+
+\begin{csharp}[caption={A function tool}, label={lst:tool-basic}]
+using System.ComponentModel;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+
+[Description("Get the current weather for a given location.")]
+static string GetWeather(
+    [Description("The city name, e.g. 'Alicante' or 'Zurich'.")] string location)
+    => $"The weather in {location} is cloudy with a high of 15C.";
+
+AIAgent agent = chatClient.AsAIAgent(
+    instructions: "You are a helpful assistant with access to weather information.",
+    name: "WeatherAgent",
+    tools: [AIFunctionFactory.Create(GetWeather)]);
+
+Console.WriteLine(await agent.RunAsync("What is the weather in Amsterdam?"));
+\end{csharp}
+
+Note what the framework derives automatically: the tool name from the method
+name, the parameter schema from the signature, and the human-readable
+descriptions from the \api{[Description]} attributes.
+
+\subsection{What the model actually sees}
+
+This is the mental model that makes the rest of the chapter make sense. The model
+does not see your method. It sees a name, a description, and a JSON schema for
+the parameters --- and it chooses among them on that basis alone. It has no
+access to the implementation, no type system, and no way to ask a clarifying
+question about what \code{location} means.
+
+Two consequences follow immediately.
+
+\textbf{The description is not documentation, it is the interface.} A method named
+\code{GetData} with the description ``gets data'' is genuinely ambiguous to the
+model in a way it is not to you, because you have the surrounding code and it does
+not.
+
+\textbf{The schema is the contract.} If a parameter can only meaningfully take
+three values, an enum communicates that and a \code{string} does not.
+
+\subsection{The tool-calling loop}
+
+When you call \api{RunAsync}, the framework runs a loop on your behalf: it detects
+function calls in the model's response, optionally requests approval
+(\S\ref{sec:approvals}), executes the functions, injects the results back into the
+conversation, and repeats until the model produces a final answer or hits an
+iteration limit.
+
+\begin{warning}
+\index{rate limits}
+Every iteration of that loop is a separate model call. A task requiring eight tool
+calls costs eight round trips, and a multi-agent orchestration multiplies it
+again --- three agents at ten iterations each is thirty calls for one user
+request. Under load this hits provider rate limits well before it hits anything
+else. Chapter~\ref{ch:harness} discusses collapsing the loop; for now, be aware
+that tool count and latency are directly proportional.
+\end{warning}
+
+% ============================================================
+\section{Parameter shapes}
+\label{sec:param-shapes}
+
+Not all schemas are equally easy for a model to fill in correctly. This is the
+single largest practical difference between a frontier model and a small local
+one, and it is worth establishing where your chosen model stops coping.
+
+Four shapes, in increasing order of difficulty:
+
+\begin{csharp}[caption={Four parameter shapes}, label={lst:tool-shapes}]
+// 1. Primitives -- reliable almost everywhere
+[Description("Convert a temperature from Celsius to Fahrenheit.")]
+static double ToFahrenheit([Description("Degrees Celsius.")] double celsius)
+    => celsius * 9 / 5 + 32;
+
+// 2. Constrained values -- an enum tells the model what is allowed
+enum Unit { Metric, Imperial }
+
+[Description("Get the weather in the requested unit system.")]
+static string GetWeather(string location, Unit unit) => /* ... */;
+
+// 3. A structured argument
+record Booking(
+    [property: Description("ISO-8601 date, e.g. 2026-08-14.")] string Date,
+    [property: Description("Number of guests, 1 to 8.")] int Guests);
+
+[Description("Reserve a table.")]
+static string Reserve(Booking booking) => /* ... */;
+
+// 4. Collections of structured arguments -- the hardest case
+[Description("Reserve several tables in one request.")]
+static string ReserveMany(IReadOnlyList<Booking> bookings) => /* ... */;
+\end{csharp}
+
+\begin{note}
+Prefer several narrow tools over one tool with a discriminated payload. It is
+tempting to write \code{ExecuteAction(string actionType, string payloadJson)} and
+let the model fill in the details. Models select poorly against that shape,
+because the description cannot say what \code{payloadJson} should contain for each
+\code{actionType}. Three separate tools with three specific schemas outperform it
+consistently.
+\end{note}
+
+\subsection{Async tools and failure}
+
+Async methods work directly --- return \code{Task<T>} and register the same way.
+Failure needs more thought.
+
+An exception thrown inside a tool has to become something the model can read,
+because the model is the caller. Returning a structured failure that says what
+went wrong is usually better than throwing, since the model can then retry with
+different arguments or tell the user what it could not do. Throwing is
+appropriate when the failure is not the model's to recover from --- a
+misconfiguration, an authentication failure, a bug.
+
+The distinction is worth being deliberate about: \emph{recoverable by choosing
+different arguments} means return a message; \emph{not recoverable by the model}
+means throw.
+
+% ============================================================
+\section{Measuring selection accuracy}
+\label{sec:tool-accuracy}
+
+The claim that descriptions matter is repeated everywhere and quantified almost
+nowhere. Quantify it.
+
+\begin{exercisebox}
+Take one tool and write three variants of its description:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Minimal} --- ``Gets weather.''
+\item \textbf{Specific} --- what it returns, in what units, for what input.
+\item \textbf{Specific with negative guidance} --- as above, plus what it is
+      \emph{not} for, and when the model should not call it.
+\end{enumerate}
+
+Register it alongside two plausible distractor tools. Run twenty identical
+prompts against each variant and record how often the correct tool was chosen
+with correct arguments.
+
+Then repeat the whole thing for each parameter shape in \S\ref{sec:param-shapes},
+against both a local and a hosted model. Record the results in
+Appendix~\ref{app:providers}.
+\end{exercisebox}
+
+This is the most transferable measurement in the book. The absolute numbers are
+model-specific and will age; the \emph{shape} of the result --- how sharply
+accuracy falls off with schema complexity on a small model --- is what tells you
+whether a cheap provider is viable for a given workload.
+
+\begin{warning}
+Before concluding that a description is inadequate, rule out the two mechanical
+causes: the model may not support function calling at all, and some chat clients
+require the function-invocation middleware to be added explicitly. See
+Appendix~\ref{app:troubleshooting}, \S\ref{sec:tb-no-tool-call}, and work through
+it in order. Rewriting prompts to fix a missing \api{UseFunctionInvocation} call
+is a memorable way to lose an afternoon.
+\end{warning}
+
+% ============================================================
+\section{Human-in-the-loop approval}
+\label{sec:approvals}
+\index{approval!function}
+\index{human-in-the-loop}
+
+By the time an agent has tools, the question of what happens when it decides to
+take an irreversible action becomes practical rather than theoretical. Cancelling
+an order, charging a card, deleting a record --- these are not decisions to leave
+to a model, however confident the prose around the call sounds.
+
+The framework's answer is to wrap the tool so that it cannot execute without an
+explicit decision.
+
+\subsection{Requiring approval}
+
+Sensitive tools are wrapped with \api{ApprovalRequiredAIFunction}, which comes
+from \pkg{Microsoft.Extensions.AI} rather than from Agent Framework itself.
+
+\subsection{The request}
+
+An agent run against an approval-required tool does not complete with an answer.
+It completes with a request for input:
+
+\begin{csharp}[caption={Detecting an approval request}, label={lst:approval-detect}]
+AgentSession session = await agent.CreateSessionAsync();
+AgentResponse response = await agent.RunAsync("What is the weather in Amsterdam?", session);
+
+var approvalRequests = response.Messages
+    .SelectMany(x => x.Contents)
+    .OfType<FunctionApprovalRequestContent>()
+    .ToList();
+
+foreach (var request in approvalRequests)
+{
+    Console.WriteLine($"Approval required for '{request.FunctionCall.Name}'");
+    // request.FunctionCall.Arguments carries what the model wants to pass.
+}
+\end{csharp}
+
+\api{FunctionApprovalRequestContent.FunctionCall} carries the name and arguments,
+which is exactly what you show a human: \emph{the agent wants to call
+\code{CancelOrder} with \code{orderId = 4471}. Allow?}
+
+\subsection{The response}
+
+\begin{csharp}[caption={Approving, and continuing the run}, label={lst:approval-respond}]
+FunctionApprovalRequestContent requestContent = approvalRequests.First();
+
+// The user has decided. Create the matching response.
+var approval = requestContent.CreateResponse(approved: true);
+
+// Pass it back as part of a new run on the same session.
+response = await agent.RunAsync(new ChatMessage(ChatRole.User, [approval]), session);
+\end{csharp}
+
+\begin{warning}
+\textbf{Keep checking until there are none left.} One run can produce several
+approval requests, and answering one can produce more on the next turn. The rule
+is: after every agent run, check for \api{FunctionApprovalRequestContent} and
+loop until none remain. Code that checks once handles the demo and fails the
+third time a user asks for something complicated.
+\end{warning}
+
+\needscreenshot{vs-debugger-approval-request}%
+{An approval request, mid-run}%
+{\vsver{} stopped at a breakpoint on the \texttt{foreach} in
+Listing~\ref{lst:approval-detect}. Capture the \emph{Locals} or \emph{Watch}
+window with \texttt{request} expanded to show \texttt{FunctionCall.Name} and
+\texttt{FunctionCall.Arguments} with real values visible --- the point of the
+figure is that the reader sees exactly what information is available to show a
+human. Widen the pane so the arguments are not truncated.}
+
+\subsection{Approvals inside workflows}
+
+The same mechanism carries into Part~II. When an agent inside an orchestration
+calls a tool wrapped with \api{ApprovalRequiredAIFunction}, the workflow pauses
+and emits a \api{RequestInfoEvent} carrying a \api{ToolApprovalRequestContent}.
+An external system inspects it, approves or rejects, and the workflow resumes:
+
+\begin{csharp}[caption={The same approval, from inside a workflow}, label={lst:approval-workflow}]
+await run.SendResponseAsync(
+    e.Request.CreateResponse(approvalRequest.CreateResponse(approved: true)));
+\end{csharp}
+
+Sequential orchestration supports this with no additional configuration.
+Chapter~\ref{ch:workflows-advanced} covers the request-and-response model
+properly; the point here is that approval is one mechanism, not two.
+
+\begin{note}
+Design approvals around \emph{irreversibility}, not around sensitivity. A tool
+that reads a customer record is sensitive but recoverable; a tool that emails the
+customer is not. The second needs a gate and the first probably does not, and
+gating everything trains operators to click through without reading --- which is
+worse than no gate at all.
+\end{note}
+
+% ============================================================
+\section{Model Context Protocol}
+\label{sec:mcp}
+\index{MCP}
+
+MCP is an open standard letting agents call tools hosted by external servers,
+regardless of what language those servers are written in. Agent Framework
+integrates with it through the official .NET SDK rather than a bespoke
+abstraction.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Package} & \textbf{Use} \\
+\midrule
+\pkg{ModelContextProtocol} & Most client and stdio server scenarios. \\
+\pkg{ModelContextProtocol.Core} & Low-level or client-only, fewer dependencies. \\
+\pkg{ModelContextProtocol.AspNetCore} & Servers hosted over HTTP in ASP.NET Core. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{versionbox}
+These packages reached stable 1.4.0 in \mafdate{}, on their own release cadence
+entirely separate from Agent Framework's. Older material adds
+\code{-{}-prerelease}; that is no longer required. The MCP specification is still
+evolving, so track the SDK repository rather than assuming the API is settled.
+\end{versionbox}
+
+\subsection{Consuming a server}
+\label{sec:mcp-client}
+
+Three steps: open a connection, discover what the server offers, hand the
+discovered tools to the agent.
+
+\begin{csharp}[caption={An agent backed by an external MCP server}, label={lst:mcp-client}]
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using ModelContextProtocol.Client;
+
+// 1. Connect. StdioClientTransport launches a local server process.
+await using var mcpClient = await McpClientFactory.CreateAsync(
+    new StdioClientTransport(new()
+    {
+        Name = "GitHub",
+        Command = "npx",
+        Arguments = ["-y", "@modelcontextprotocol/server-github"]
+    }));
+
+// 2. Discover. Nothing is hardcoded.
+IList<McpClientTool> mcpTools = await mcpClient.ListToolsAsync();
+
+// 3. Register. McpClientTool implements AITool, so it goes straight in.
+AIAgent agent = chatClient.AsAIAgent(
+    instructions: "You answer GitHub repository questions using the provided tools.",
+    name: "GitHubAgent",
+    tools: [.. mcpTools]);
+\end{csharp}
+
+\begin{verifybox}
+\textbf{Two client constructors.} Published examples use both
+\api{McpClientFactory.CreateAsync(...)} and \api{McpClient.CreateAsync(...)}, and
+the transport constructor appears both with an object initialiser and with
+positional arguments. Check the SDK version you have pinned. The three-step shape
+--- connect, discover, register --- is stable regardless.
+\end{verifybox}
+
+Step two is the reason MCP is interesting. You do not write bindings for the
+server's tools; you ask it what it has. A server that gains a tool next month
+requires no change on your side.
+
+\begin{warning}
+\index{MCP!disposal}
+\textbf{Use \code{await using}, not \code{using}.} An MCP client holds a child
+process or a network socket open, and disposal is asynchronous. Getting this
+wrong leaks processes --- invisibly in a console sample, expensively in a
+long-running service that creates a client per request.
+\end{warning}
+
+\subsection{Transports}
+
+\api{StdioClientTransport} launches a local process and speaks over its standard
+input and output. It suits local, desktop and IDE-hosted tooling.
+\api{SseClientTransport} connects to a remote server over HTTP. The choice is
+mostly about where the server runs and who owns it.
+
+\needscreenshot{vs-debugger-mcp-tools}%
+{Tools discovered from an MCP server at run time}%
+{\vsver{} stopped at a breakpoint immediately after \texttt{ListToolsAsync()} in
+Listing~\ref{lst:mcp-client}. Capture the \emph{Locals} window with the
+\texttt{mcpTools} collection expanded so that several discovered tool names and
+their descriptions are readable. The figure exists to show that discovery is
+dynamic --- so the count and the names being visible matters more than any
+individual entry.}
+
+\subsection{Exposing an agent as an MCP tool}
+\label{sec:mcp-server}
+
+The relationship runs both ways. An agent can be published as an MCP tool that
+anything speaking the protocol can call --- including agents written in other
+languages, and including tooling that is not an agent at all.
+
+\begin{csharp}[caption={Publishing an agent over MCP}, label={lst:mcp-server}]
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using ModelContextProtocol.Server;
+
+AIAgent nutritionAgent = chatClient.AsAIAgent(
+    instructions: "You can fetch recipes and nutrition data.",
+    name: "NutritionAgent",
+    description: "Searches for high-protein recipes and nutrition information.",
+    tools: [AIFunctionFactory.Create(SearchRecipesAsync)]);
+
+// The agent's name and description become the MCP tool's name and description.
+McpServerTool tool = McpServerTool.Create(nutritionAgent.AsAIFunction());
+
+HostApplicationBuilder builder = Host.CreateEmptyApplicationBuilder(settings: null);
+builder.Services
+    .AddMcpServer()
+    .WithStdioServerTransport()
+    .WithTools([tool]);
+
+await builder.Build().RunAsync();
+\end{csharp}
+
+Note the \code{description} argument on the agent. In
+Chapter~\ref{ch:first-agent} the \code{name} was described as functional rather
+than decorative; here both name and description become the interface other
+systems select against. This is the second place where those strings stop being
+cosmetic, and it will not be the last.
+
+\subsection{Security}
+
+MCP moves the trust boundary. Three things follow.
+
+\textbf{Server credentials belong in the environment, not in your source.} The
+GitHub server in Listing~\ref{lst:mcp-client} reads a personal access token from
+the process environment. Set it in the shell or through user secrets; never
+inline it.
+
+\textbf{Tool results are untrusted input.} An MCP server returns text that goes
+straight into the model's context. If the server is not yours --- and often it is
+not --- that text can contain instructions. This is prompt injection with a
+supply chain attached to it, and the defences are the ones you would apply to any
+untrusted input: constrain what the agent can do with the result, and gate the
+consequential actions behind approval (\S\ref{sec:approvals}).
+
+\textbf{Discovery is dynamic, which cuts both ways.} A server that gains a tool
+next month gains it in your agent too, without a code review. For third-party
+servers, pin the version.
+
+% ============================================================
+\section{Agents as tools}
+\label{sec:agents-as-tools}
+
+\api{AsAIFunction} works outside MCP as well. Any agent can become a tool for
+another agent:
+
+\begin{csharp}[caption={An orchestrator delegating to specialists}, label={lst:agent-as-tool}]
+AIAgent orchestrator = chatClient.AsAIAgent(
+    instructions: """
+        You are an assistant with access to specialist experts.
+        Delegate to the most appropriate expert using your tools,
+        then combine their answers into one coherent response.
+        """,
+    name: "Orchestrator",
+    tools: [historyAgent.AsAIFunction(), scienceAgent.AsAIFunction()]);
+\end{csharp}
+
+This is the simplest multi-agent pattern in the framework, and it is worth
+understanding what it is not. The specialists here are \emph{tools}: they are
+called, they return, control comes back. They do not take over the conversation,
+they cannot hand off to each other, and the orchestrator remains responsible for
+the final answer.
+
+Chapter~\ref{ch:orchestration} covers handoff, where control genuinely transfers.
+The distinction is delegation versus transfer, and choosing wrongly is a common
+source of multi-agent systems that are harder to reason about than they need to
+be. If the caller should own the final answer, use a tool.
+
+% ============================================================
+\section{Agent Skills}
+\label{sec:skills}
+\index{skills}
+
+Skills package instructions, resources and scripts on a filesystem so an agent
+can discover and load them on demand, rather than carrying everything in its
+system prompt.
+
+The skills provider exposes exactly three tools to the agent:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Tool} & \textbf{Does} \\
+\midrule
+\code{load\_skill} & Loads a skill's instructions into context. \\
+\code{read\_skill\_resource} & Fetches a resource bundled with a skill. \\
+\code{run\_skill\_script} & Executes a script bundled with a skill. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{All three require approval by default.} Nothing loads and nothing executes
+without oversight, and you relax that selectively for operations you trust. Given
+that the third tool executes code, this default is the correct one and you should
+think hard before changing it.
+
+\subsection{Where scripts run}
+
+The execution model has a split that matters:
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Class-based and code-defined skill scripts run in-process.} They are
+      your code; the framework calls them.
+\item \textbf{File-based scripts are delegated to a runner you provide.} The
+      framework does not execute them for you.
+\end{itemize}
+
+That second point is a design decision, not an omission. Sandboxing, resource
+limits and audit logging for arbitrary file-based scripts are yours to implement,
+because only you know what isolation your environment requires.
+
+\begin{warning}
+If you implement a file-based script runner, treat it as a security boundary from
+the first line. It executes code selected by a model on the basis of text that may
+have come from an untrusted tool result. The combination of dynamic skill
+discovery and script execution is the most consequential capability in this
+chapter --- and, unlike the approval gate, nothing about it is safe by default
+once you have written the runner.
+\end{warning}
+
+\begin{versionbox}
+Agent Skills for .NET is a recent release. Check the current documentation for
+the provider's configuration surface, including the filtering options for
+controlling which skills an agent can discover.
+\end{versionbox}
+
+% ============================================================
+\section{Summary}
+
+A C\# method becomes a tool through \api{AIFunctionFactory.Create}, with the name
+taken from the method, the schema from the signature, and the descriptions from
+\api{[Description]}. The model sees only those three things, which is why
+descriptions are an interface rather than documentation, and why several narrow
+tools beat one tool with a discriminated payload.
+
+Selection accuracy degrades with schema complexity, sharply so on smaller models.
+Measure it rather than assuming it --- but rule out the mechanical causes first.
+
+Sensitive tools are wrapped with \api{ApprovalRequiredAIFunction}. The run
+returns \api{FunctionApprovalRequestContent} instead of an answer; you show the
+function name and arguments to a human, call \api{CreateResponse}, and continue
+--- looping until no requests remain. The same mechanism appears inside workflows
+as \api{RequestInfoEvent}. Gate on irreversibility, not on sensitivity.
+
+MCP is connect, discover, register --- and \code{await using}, not \code{using}.
+Discovery being dynamic is the feature and also the reason to pin third-party
+servers. Tool results are untrusted input.
+
+\api{AsAIFunction} turns an agent into a tool, for MCP or for another agent. That
+is delegation, and it is a different thing from the handoff in
+Chapter~\ref{ch:orchestration}.
+
+Skills add filesystem-discovered instructions, resources and scripts, gated by
+approval on all three operations by default. File-based script execution is
+delegated to a runner you write, which makes the isolation your responsibility.
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:memory}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Register three tools of increasing schema complexity and confirm your local
+      model calls each one correctly. Note where it stops coping.
+\item Run the description experiment in \S\ref{sec:tool-accuracy} and record the
+      numbers in Appendix~\ref{app:providers}.
+\item Wrap a destructive tool with \api{ApprovalRequiredAIFunction} and implement
+      the full approval loop --- including the case where one run produces two
+      requests.
+\item Connect an agent to an existing MCP server, then write a small MCP server of
+      your own and consume it. Exposing something you already have --- a
+      diagnostic query, a build status, a log search --- is more instructive than
+      a toy.
+\item Take one tool from step~1 and expose it through your MCP server instead.
+      Note what changed in the agent code. It should be almost nothing.
+\end{enumerate}
+\end{exercisebox}

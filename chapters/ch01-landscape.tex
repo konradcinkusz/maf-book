@@ -1,0 +1,455 @@
+\chapter{The Landscape}
+\label{ch:landscape}
+
+\begin{quote}
+\itshape
+Before you write a line of agent code, you need to know which of the four
+Microsoft libraries with overlapping names you are supposed to be using, and
+why the other three exist.
+\end{quote}
+
+\noindent
+This chapter answers that question. It is the only chapter in the book with no
+runnable sample in it, and it exists because the single most common way to waste
+a week on Agent Framework is to start from a two-year-old blog post about a
+library that has since been superseded.
+
+By the end you should be able to state, without reference material, where Agent
+Framework sits relative to \pkg{Microsoft.Extensions.AI}, Semantic Kernel,
+AutoGen, and Microsoft Foundry --- and, more usefully, when you should not reach
+for it at all.
+
+% ============================================================
+\section{Three years, compressed}
+\index{Semantic Kernel}\index{AutoGen}
+
+Microsoft arrived at Agent Framework by merging two projects that had been
+solving adjacent halves of the same problem in different styles.
+
+\textbf{Semantic Kernel} was the enterprise-facing effort. Its concerns were the
+ones a platform team recognises immediately: dependency injection, plugins with
+typed contracts, filters and telemetry, multi-language parity across .NET, Python
+and Java, and a support story you could put in front of a risk committee. Its
+weakness was that orchestration --- getting several agents to genuinely
+collaborate --- was bolted on late.
+
+\textbf{AutoGen} came from the research side, and orchestration was the whole
+point. Group chat, conversational handoff, and agent topologies were first-class
+there years before they were credible anywhere else. Its weakness was the mirror
+image of Semantic Kernel's: excellent patterns, thin production plumbing.
+
+Between them the two projects accumulated more than seventy-five thousand GitHub
+stars and a large body of field experience. In October~2025 Microsoft announced
+that they would converge into a single SDK. The timeline from there was short:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Date} & \textbf{Milestone} \\
+\midrule
+October 2025      & Agent Framework announced; convergence of SK and AutoGen \\
+19 February 2026  & Release Candidate --- API surface frozen for 1.0 \\
+2--3 April 2026   & \textbf{1.0 General Availability}, .NET and Python \\
+June 2026 (BUILD) & Agent harness, hosted agents, CodeAct, handoff pattern \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The GA milestone is the one that matters for your purposes. It carries stable
+APIs, versioned releases, and a long-term support commitment. Everything shipped
+at BUILD in June builds on top of that foundation rather than changing it ---
+which is why this book treats the GA surface as the spine and marks the June
+additions separately.
+
+\begin{note}
+The predecessors have not vanished. Semantic Kernel's agent abstractions
+continue to receive critical fixes for a period after GA, and AutoGen~.NET is in
+maintenance --- it works, but it gets no new features. If you inherit a codebase
+using either, you are not in an emergency. If you are starting something new,
+there is no argument for either.
+\end{note}
+
+% ============================================================
+\section{The layer cake}
+\label{sec:layercake}
+\index{layering}
+
+The most useful mental model is a stack, and the most common confusion comes
+from collapsing two of its layers into one.
+
+\needdiagram{layer-cake}{The Agent Framework stack, from provider abstraction to hosting}{%
+A four-band vertical stack. Bottom band: model providers (Azure OpenAI, OpenAI,
+Anthropic, Bedrock, Gemini, Ollama). Second band: \texttt{Microsoft.Extensions.AI}
+--- \texttt{IChatClient}, \texttt{IEmbeddingGenerator}. Third band: Semantic
+Kernel foundations --- plugins, filters, kernel services. Fourth band: Microsoft
+Agent Framework --- agents, tools, context providers, middleware, workflows. Top
+band, drawn as an optional overlay to the side: Microsoft Foundry --- hosted
+agents, memory store, evaluations. Arrows should run upward only.}
+
+From the bottom:
+
+\begin{description}[leftmargin=0pt, style=nextline]
+\item[Model providers.] Azure OpenAI, OpenAI, Anthropic, Amazon Bedrock, Google
+Gemini, and Ollama are all supported at 1.0. This layer is where your tokens are
+actually spent.
+
+\item[\pkg{Microsoft.Extensions.AI}.] The provider abstraction. Its central type
+is \api{IChatClient}, and its job is to make the layer below interchangeable.
+This is not part of Agent Framework --- it is a general .NET abstraction that
+Agent Framework consumes. Understanding this separation is what makes the
+one-line provider swap in Chapter~\ref{ch:first-agent} unsurprising rather than
+magical.
+
+\item[Semantic Kernel foundations.] Plugin infrastructure, filters, kernel
+services. You will rarely program against this layer directly, but it is why
+certain Agent Framework abstractions have the shape they do.
+
+\item[Agent Framework.] Agents, tools, MCP integration, context providers,
+middleware, and multi-step workflows. This is the subject of the book.
+
+\item[Microsoft Foundry.] Not a layer so much as a managed environment that can
+host what you build: hosted agents, a memory store, evaluation runs,
+observability into Application Insights. Optional. Agent Framework runs perfectly
+well with no Azure account at all, and most of this book does exactly that.
+\end{description}
+
+\begin{warning}
+Agent Framework is \emph{built on} Semantic Kernel rather than being a
+replacement for it, and people routinely get this backwards. If you read a claim
+that Agent Framework ``replaces'' Semantic Kernel, the author means that it
+replaces SK's \emph{agent abstractions} --- not the kernel, plugin and filter
+infrastructure underneath.
+\end{warning}
+
+% ============================================================
+\section{Two load-bearing abstractions}
+\label{sec:abstractions}
+
+Strip away the surface area and Agent Framework has two types you must
+understand. Everything else is a convenience over one of them.
+
+\subsection{\texttt{AIAgent}}
+\index{AIAgent@\texttt{AIAgent}}
+
+An agent is a model, a set of instructions, a set of tools, and a conversation.
+The framework's expression of that is \api{AIAgent}, and the striking thing about
+its construction is how little ceremony it requires: any \api{IChatClient}
+becomes an agent through a single extension method.
+
+That design choice has a consequence worth stating early. Because the agent is a
+thin decoration over a chat client, an agent is cheap. You are not expected to
+have one agent per application; you are expected to have several, each narrowly
+scoped, composed by the second abstraction.
+
+\subsection{\texttt{Workflow}}
+\index{Workflow@\texttt{Workflow}}
+
+A workflow is a directed graph of \emph{executors} connected by \emph{edges},
+with typed messages passing along them. An agent is an executor. So is an
+ordinary function. That symmetry is the framework's central idea, and it is what
+separates Agent Framework from the majority of agent libraries, which model
+composition as either a linear chain or a free-for-all conversation.
+
+Because a workflow is a graph rather than a conversation, it can do things a
+conversation cannot: fan out and rejoin, route conditionally, stream structured
+events about its own progress, checkpoint mid-execution, and pause to wait for a
+human decision before resuming hours later.
+
+\begin{note}
+If you take one thing from this chapter, take this: \emph{the orchestration
+patterns are conveniences over the workflow graph}. Sequential, concurrent, group
+chat and handoff (Chapter~\ref{ch:orchestration}) are not a separate mechanism.
+Knowing that tells you what to do when a pattern stops fitting --- drop a level
+and write the graph yourself.
+\end{note}
+
+% ============================================================
+\section{What ships in the box}
+
+The 1.0 feature set, stated plainly:
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Multi-agent orchestration} --- sequential, concurrent, group chat
+      and handoff patterns.
+\item \textbf{Graph-based workflows} --- streaming, checkpointing and
+      human-in-the-loop, available in both imperative and declarative form.
+\item \textbf{Multi-provider support} --- six providers at GA, swappable
+      through configuration.
+\item \textbf{Extensible middleware} --- request and response interception with
+      custom pipelines and exception handling.
+\item \textbf{Built-in observability} --- OpenTelemetry integration following the
+      GenAI semantic conventions, for distributed tracing and debugging.
+\item \textbf{MCP} --- Model Context Protocol support for tools, native rather
+      than bolted on.
+\item \textbf{A2A} --- the Agent-to-Agent protocol, for structured messaging
+      between agents across different runtimes. A Python agent and a .NET agent
+      can coordinate.
+\end{itemize}
+
+The last two deserve emphasis because they arrived \emph{at} 1.0 rather than
+after it. Cross-runtime and cross-vendor interoperability were treated as
+release-blocking concerns, which is a reasonable signal about the framework's
+intended lifespan.
+
+% ============================================================
+\section{The package map}
+\label{sec:packages}
+\index{NuGet packages}
+
+Agent Framework is not one NuGet package. Knowing which is which saves a
+surprising amount of time.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Package} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI} & Core abstractions. \api{AIAgent}, threads, tools, context providers, middleware. Always needed. \\
+\pkg{Microsoft.Agents.AI.OpenAI} & OpenAI and Azure OpenAI provider binding. \\
+\pkg{Microsoft.Agents.AI.Workflows} & Executors, edges, the workflow builder, checkpointing. Needed from Chapter~\ref{ch:workflows-basics} onward. \\
+\pkg{Microsoft.Agents.AI.Workflows.Declarative} & YAML-defined workflows. \\
+\pkg{Microsoft.Agents.AI.A2A} & Agent-to-Agent protocol client. \\
+\pkg{Microsoft.Agents.AI.Foundry.Hosting} & Hosting an agent in Foundry Agent Service. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Additional provider packages (Anthropic, Bedrock, Gemini, Ollama), an ASP.NET
+Core A2A hosting package, and a Roslyn source-generator package for compile-time
+workflow route configuration are published alongside these. Appendix~\ref{app:packages}
+carries the full list with the versions used throughout the book.
+
+\begin{versionbox}
+These packages ship in \emph{release trains}, not on one version line. As this
+was written the core train --- \pkg{Microsoft.Agents.AI},
+\pkg{Microsoft.Agents.AI.OpenAI}, \pkg{Microsoft.Agents.AI.Workflows} --- was at
+\mafcore{}, while the extensions train carrying the harness, durable execution
+and Foundry hosting was at \mafext{}, and two packages were still on a
+\code{1.0.0-rc5} from March. A single \code{\$(MafVersion)} property will not
+work. Pin every package explicitly; Central Package Management
+(\code{Directory.Packages.props}) is set up in Chapter~\ref{ch:first-agent} for
+exactly this reason, and Appendix~\ref{app:packages} lists every package with
+its train.
+\end{versionbox}
+
+\needscreenshot{vs-nuget-browse-maf}%
+{Browsing the Agent Framework packages in the NuGet Package Manager}%
+{In \vsver{}, open \emph{Manage NuGet Packages} on any project, switch to the
+\emph{Browse} tab, and search for \texttt{Microsoft.Agents.AI}. Capture the full
+dialog including: the search box with the query visible, the result list showing
+at least \texttt{Microsoft.Agents.AI}, \texttt{Microsoft.Agents.AI.OpenAI} and
+\texttt{Microsoft.Agents.AI.Workflows}, the \emph{Include prerelease} checkbox,
+and the right-hand version dropdown expanded if possible. Light theme preferred
+for print legibility.}
+
+% ============================================================
+\section{A first look at the API}
+
+You will not run anything until Chapter~\ref{ch:first-agent}. But the shape of
+the API is worth seeing now, because it explains why the rest of the book spends
+so little time on agent construction and so much on what agents are composed
+into.
+
+Here is an entire agent:
+
+\begin{csharp}[caption={An agent, in full}, label={lst:first-look}]
+using Microsoft.Agents.AI;
+
+AIAgent agent = chatClient.AsAIAgent(
+    instructions: "You are a helpful assistant.",
+    name: "Assistant");
+
+Console.WriteLine(await agent.RunAsync("What is Microsoft Agent Framework?"));
+\end{csharp}
+
+\begin{verifybox}
+Listing~\ref{lst:first-look} is transcribed from Microsoft's published examples
+rather than compiled by the author against \mafcore{}. The \api{chatClient}
+variable is deliberately unbound here --- constructing a provider-specific
+\api{IChatClient} is the first thing Chapter~\ref{ch:first-agent} does, and the
+construction syntax differs by provider.
+\end{verifybox}
+
+Three observations, each of which the rest of the book expands on.
+
+\textbf{The agent is an extension method away from a chat client.} There is no
+agent builder, no registration ceremony, no configuration file. If constructing
+an agent were expensive, composing a dozen of them into a workflow would be
+impractical --- so it is not expensive.
+
+\textbf{Instructions and name are constructor-level concerns.} The name is not
+cosmetic. In handoff orchestration (Chapter~\ref{ch:orchestration}) the framework
+generates transfer tools from agent names, so what you type there becomes part of
+the model's decision surface.
+
+\textbf{Running the agent returns a value you can print.} The synchronous,
+non-streaming path is the simple case; streaming, threading, tool approval and
+cancellation all layer on top without changing this shape.
+
+For contrast, here is the same idea at the other end of the book --- a three-agent
+handoff topology, which is what Listing~\ref{lst:first-look} scales into:
+
+\begin{csharp}[caption={Where this is going: a handoff topology (Chapter~\ref{ch:orchestration})}, label={lst:first-look-handoff}]
+using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Workflows;
+
+AIAgent triage = chatClient.AsAIAgent(
+    instructions: "You receive a user request and route it to the right specialist.",
+    name: "Triage");
+
+AIAgent billing = chatClient.AsAIAgent(
+    instructions: "You handle billing questions.", name: "Billing");
+
+AIAgent tech = chatClient.AsAIAgent(
+    instructions: "You handle technical support questions.", name: "Tech");
+
+Workflow workflow = AgentWorkflowBuilder
+    .CreateHandoffBuilderWith(triage)
+    .WithHandoff(triage, billing)
+    .WithHandoff(triage, tech)
+    .Build();
+\end{csharp}
+
+\begin{verifybox}
+Also transcribed rather than compiled. \api{AgentWorkflowBuilder} lives in
+\pkg{Microsoft.Agents.AI.Workflows}; verify the builder method names against
+\mafworkflows{} before relying on them.
+\end{verifybox}
+
+Note what is \emph{not} in Listing~\ref{lst:first-look-handoff}: any routing
+logic. You declare the topology and the guardrails; the agents make the routing
+decisions at run time, using transfer tools the framework injects on your behalf.
+That division --- topology to the developer, routing to the model --- is the
+design position Agent Framework takes throughout, and Chapter~\ref{ch:orchestration}
+examines where it holds up and where it does not.
+
+% ============================================================
+\section{When not to use Agent Framework}
+\label{sec:when-not}
+
+A book that never says no is a brochure. Four cases where reaching for Agent
+Framework is the wrong call:
+
+\begin{description}[leftmargin=0pt, style=nextline]
+\item[You need one model call.] If your feature is ``summarise this text'' or
+``classify this ticket'', you want \pkg{Microsoft.Extensions.AI} and an
+\api{IChatClient} directly. An agent adds an instruction preamble, a tool-selection
+step and a conversation abstraction that you are not using. The layer below is
+right there; use it.
+
+\item[Your control flow is deterministic.] If you know at design time exactly
+which steps run in which order, that is a pipeline, and C\# already expresses
+pipelines well. Workflows earn their complexity when routing depends on model
+output, when steps can fail and resume, or when a human interrupts. If none of
+those apply, you are paying for a graph engine to run a \code{foreach}.
+
+\item[You are locked to a runtime Agent Framework does not target.] The packages
+target .NET~8, .NET~Standard~2.0 and .NET Framework~4.7.2, which covers most
+things --- but verify against your actual target before committing.
+
+\item[Latency is your binding constraint and your task is tool-heavy.] Each
+tool call in a traditional agent loop is a separate model turn. On a
+tool-intensive task this dominates. Chapter~\ref{ch:harness} covers the CodeAct
+approach to collapsing that loop --- available for .NET through
+\pkg{Microsoft.Agents.AI.Hyperlight}, though still preview --- which materially
+reduces the turn count without eliminating the model round trip. If you need a
+chain of forty tool calls to return in under a second, no agent framework is your
+answer yet.
+\end{description}
+
+\begin{note}
+The inverse test is more useful than any of these. Agent Framework pays for
+itself when at least two of the following are true: control flow depends on model
+output; multiple specialised agents must collaborate; execution runs long enough
+that a process restart is plausible; a human must approve or intervene mid-run;
+or you need to explain afterwards, from traces, why the system did what it did.
+\end{note}
+
+% ============================================================
+\section{Verifying your toolchain}
+\label{sec:toolchain}
+
+Chapter~\ref{ch:first-agent} builds the first project from nothing. Before
+turning the page, confirm three things.
+
+\subsection{SDK version}
+
+\begin{shellcmd}
+dotnet --list-sdks
+\end{shellcmd}
+
+You want \dotnetver{} or later on the machine you will develop on. The packages
+themselves target lower, but the samples in this book use file-scoped namespaces,
+collection expressions and, in two places, the \code{\#:package} file-based app
+directive, which requires a recent SDK.
+
+\subsection{IDE workloads}
+
+Agent Framework needs no special Visual Studio workload beyond ASP.NET and web
+development, plus the container tooling if you intend to follow
+Chapters~\ref{ch:memory} and~\ref{ch:hosting}. Confirm your installation and
+build number:
+
+\needscreenshot{vs-about-dialog}%
+{Visual Studio version used throughout this book}%
+{\vsver{}: \emph{Help $\rightarrow$ About Microsoft Visual Studio}. Capture the
+dialog showing the full version and build number, and the edition. This appears
+once, in this chapter, so that readers on a different build know exactly what the
+later screenshots were taken against. Crop tightly to the dialog.}
+
+\subsection{Solution layout}
+
+Every sample in this book lives in one solution, organised by chapter. Setting it
+up is the first task of Chapter~\ref{ch:first-agent}, but the finished shape is
+worth seeing now so you know what you are building toward:
+
+\needscreenshot{vs-solution-explorer-scaffold}%
+{The companion solution, organised by chapter}%
+{\vsver{} Solution Explorer, showing the \texttt{maf-book-samples} solution
+expanded two levels: solution folders \texttt{01-agents}, \texttt{02-tools},
+\texttt{03-memory}, \texttt{04-workflows}, \texttt{05-orchestration},
+\texttt{06-observability}, \texttt{07-hosting}, \texttt{08-harness}, with at
+least one project visible inside \texttt{01-agents}, and
+\texttt{Directory.Packages.props} and \texttt{Directory.Build.props} visible at
+solution level. Collapse everything below project level so the structure is
+legible at print size.}
+
+% ============================================================
+\section{Summary}
+
+Agent Framework is the converged successor to Semantic Kernel's agent
+abstractions and AutoGen's orchestration patterns, GA since April~2026, with
+stable APIs and long-term support. It sits above
+\pkg{Microsoft.Extensions.AI} --- which supplies the interchangeable
+\api{IChatClient} --- and below Microsoft Foundry, which can host what you build
+but is not required to run it.
+
+Two abstractions carry the framework. \api{AIAgent} is a deliberately cheap
+decoration over a chat client. \api{Workflow} is a typed, checkpointable graph of
+executors, and every orchestration pattern in the framework is a convenience over
+it.
+
+It is the wrong tool for a single model call, for deterministic pipelines, and
+for latency-bound tool chains. It is the right tool when control flow depends on
+model output, when several agents collaborate, when runs are long enough to need
+resumption, and when you must be able to explain afterwards what happened.
+
+\begin{exercisebox}
+Answer these from memory before continuing. If you cannot, reread
+\S\ref{sec:layercake} and \S\ref{sec:abstractions} rather than pressing on ---
+Chapter~\ref{ch:first-agent} assumes all four.
+
+\begin{enumerate}[leftmargin=1.4em]
+\item In three sentences, where does Agent Framework sit relative to
+      \pkg{Microsoft.Extensions.AI}, Semantic Kernel, and Microsoft Foundry?
+\item Why is it significant that an agent is constructed from an
+      \api{IChatClient} by a single extension method?
+\item What is the relationship between the four orchestration patterns and the
+      workflow graph, and what does that relationship tell you to do when a
+      pattern does not fit your problem?
+\item Give two concrete features of your own current or previous work where
+      Agent Framework would have been the wrong choice, and say which layer you
+      would have used instead.
+\end{enumerate}
+\end{exercisebox}

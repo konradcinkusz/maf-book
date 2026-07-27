@@ -1,0 +1,254 @@
+\chapter{Provider Configuration Matrix}
+\label{app:providers}
+
+Construction, authentication, and the places the provider abstraction leaks.
+
+\begin{note}
+Chapter~\ref{ch:first-agent} refers here for measurements. \S\ref{sec:measure-template}
+is a recording template rather than a finished table --- the numbers depend on
+your hardware, your region, and the model versions available when you run it, so a
+table filled in by someone else would be actively misleading. The methodology is
+fixed; the numbers are yours.
+\end{note}
+
+% ============================================================
+\section{Construction}
+
+Every listing below produces an \api{IChatClient}. What you do with it afterwards
+is identical across providers --- see \S\ref{sec:seam} in
+Chapter~\ref{ch:first-agent}.
+
+\subsection{Ollama (local)}
+
+\begin{csharp}[caption={Ollama via the first-party connector}, label={lst:prov-ollama}]
+// dotnet add package Microsoft.Extensions.AI.Ollama --prerelease
+using Microsoft.Extensions.AI;
+
+IChatClient chatClient = new OllamaChatClient(
+    new Uri("http://localhost:11434"),
+    modelId: "llama3.2");
+\end{csharp}
+
+\begin{csharp}[caption={Ollama via OllamaSharp}, label={lst:prov-ollamasharp}]
+// dotnet add package OllamaSharp
+using OllamaSharp;
+
+IChatClient chatClient = new OllamaApiClient(
+    new Uri("http://localhost:11434"),
+    "qwen3");
+\end{csharp}
+
+No authentication. Default port \code{11434}. Both clients implement
+\api{IChatClient}, so either works; the samples in this book use the first.
+
+\subsection{Azure OpenAI}
+
+\begin{csharp}[caption={Azure OpenAI with credential-based authentication}, label={lst:prov-azure}]
+// dotnet add package Azure.AI.OpenAI --prerelease
+// dotnet add package Azure.Identity
+using Azure.AI.OpenAI;
+using Azure.Identity;
+using Microsoft.Extensions.AI;
+
+IChatClient chatClient = new AzureOpenAIClient(
+        new Uri(config["AzureOpenAI:Endpoint"]!),
+        new DefaultAzureCredential())
+    .GetChatClient(config["AzureOpenAI:Deployment"]!)
+    .AsIChatClient();
+\end{csharp}
+
+Note that the argument to \api{GetChatClient} is a \emph{deployment} name, not a
+model name --- they are frequently different, and the resulting error when you
+confuse them is unhelpful.
+
+\api{DefaultAzureCredential} walks a chain of credential sources. On a
+development machine that usually resolves to your \code{az login} session; in
+Azure it resolves to a managed identity. Prefer it over
+\api{AzureKeyCredential}: there is then no secret to leak.
+
+\subsection{OpenAI}
+
+\begin{csharp}[caption={OpenAI}, label={lst:prov-openai}]
+using OpenAI;
+using Microsoft.Extensions.AI;
+using System.ClientModel;
+
+IChatClient chatClient = new OpenAIClient(new ApiKeyCredential(apiKey))
+    .GetChatClient(modelId)
+    .AsIChatClient();
+\end{csharp}
+
+\subsection{Microsoft Foundry}
+
+Foundry differs from the others: the project client becomes an agent directly,
+with the model named at agent construction rather than at client construction.
+
+\begin{csharp}[caption={Foundry Agents}, label={lst:prov-foundry}]
+using Azure.AI.Projects;
+using Azure.Identity;
+using Microsoft.Agents.AI;
+
+AIAgent agent = new AIProjectClient(new Uri(endpoint), new DefaultAzureCredential())
+    .AsAIAgent(
+        model: deploymentName,
+        instructions: "You are a friendly assistant.");
+\end{csharp}
+
+\begin{warning}
+Foundry stores conversations server-side. A serialised \api{AgentThread} from a
+Foundry agent therefore contains an \emph{identifier}, not the messages --- and
+cleaning up the remote thread is your responsibility, not the framework's. See
+\S\ref{sec:threads}.
+\end{warning}
+
+\subsection{Anthropic}
+
+\begin{verifybox}
+\pkg{Microsoft.Agents.AI.Anthropic} exists at \mafcore{}-preview and its
+description reads ``support for Anthropic Agents,'' but the construction syntax
+has not been verified by the author. Check the package's own documentation before
+using it. Do not assume it mirrors Listing~\ref{lst:prov-openai}.
+\end{verifybox}
+
+\subsection{Amazon Bedrock and Google Gemini}
+
+Both are named as supported providers in Microsoft's 1.0 announcement. Neither
+has a package under the \code{MicrosoftAgentFramework} account
+(Appendix~\ref{app:packages}), which means they are reached through an
+\api{IChatClient} implementation from elsewhere in the
+\pkg{Microsoft.Extensions.AI} ecosystem rather than through an Agent
+Framework-branded package.
+
+\begin{verifybox}
+Identify the correct connector package for these two before writing against them.
+The pattern will be the one in Listing~\ref{lst:prov-ollama} --- construct a
+provider client that implements \api{IChatClient}, then proceed identically ---
+but the package name is unverified here.
+\end{verifybox}
+
+% ============================================================
+\section{Function invocation}
+
+Some \api{IChatClient} implementations require the function-invocation middleware
+to be added explicitly before tool calling works:
+
+\begin{csharp}[caption={Adding function invocation to a chat client}, label={lst:prov-funcinvoke}]
+using Microsoft.Extensions.AI;
+
+var agent = chatClient
+    .AsBuilder()
+    .UseFunctionInvocation()
+    .Build()
+    .CreateAIAgent(
+        name: "ToolUser",
+        instructions: "You are a useful agent.",
+        tools: [AIFunctionFactory.Create(GetWeather)]);
+\end{csharp}
+
+\begin{note}
+Whether this is required or already wired depends on the client. If tools are
+registered, the model is capable, and nothing is ever called, this is the first
+thing to check --- before you start rewriting tool descriptions. See also
+Appendix~\ref{app:troubleshooting}, \S\ref{sec:tb-no-tool-call}.
+\end{note}
+
+% ============================================================
+\section{Support characteristics}
+
+What can be stated without measurement.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lXX@{}}
+\toprule
+\textbf{Provider} & \textbf{Thread storage} & \textbf{Auth} \\
+\midrule
+Ollama & In-memory --- serialised thread contains the messages & None \\
+Azure OpenAI & In-memory & Entra credential or key \\
+OpenAI & In-memory, or server-side with Responses & API key \\
+Foundry Agents & Server-side --- serialised thread contains an id & Entra credential \\
+Anthropic & Unverified & API key \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The thread-storage column is the one with architectural consequences. It
+determines the size and content of what you persist, whether conversation data
+leaves your infrastructure, and whether you have remote state to clean up.
+
+% ============================================================
+\section{Measurement template}
+\label{sec:measure-template}
+
+Fill this in yourself. The exercise is in \S\ref{sec:measure} of
+Chapter~\ref{ch:first-agent}.
+
+\subsection{Method}
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Ten fixed prompts: five open conversational, five requiring a specific
+      structured answer. Same prompts for every provider, stored in the repo so
+      the run is reproducible.
+\item Twenty runs per prompt per provider. Discard the first run per provider ---
+      it measures connection setup, not inference.
+\item Record wall-clock time to first streamed update and to completion, and the
+      token counts the provider reports.
+\item Run providers in interleaved order rather than in blocks, so that network
+      conditions or thermal throttling do not load onto one provider.
+\item Record the machine, the model version, the region, and the date. Without
+      these the numbers are not comparable to anything, including your own later
+      runs.
+\end{enumerate}
+
+\subsection{Results}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}Xrrrrr@{}}
+\toprule
+\textbf{Provider / model} & \textbf{TTFT p50} & \textbf{TTFT p95} & \textbf{Total p50} & \textbf{Tok in} & \textbf{Tok out} \\
+\midrule
+Ollama / llama3.2 & & & & & \\
+Ollama / qwen3:4b & & & & & \\
+Azure OpenAI / & & & & & \\
+OpenAI / & & & & & \\
+Foundry / & & & & & \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\emph{Machine:} \dotfill \\
+\emph{Date:} \dotfill \qquad \emph{Region:} \dotfill
+
+\subsection{Tool-selection accuracy}
+
+Complete this after Chapter~\ref{ch:tools}. Selection rate is the fraction of
+twenty runs in which the correct tool was called with correct arguments.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}Xrrr@{}}
+\toprule
+\textbf{Provider / model} & \textbf{Simple args} & \textbf{Nested object} & \textbf{Collection} \\
+\midrule
+Ollama / llama3.2 & & & \\
+Ollama / qwen3:4b & & & \\
+Azure OpenAI / & & & \\
+OpenAI / & & & \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Expect the gap between local and frontier models to be widest in the rightmost
+column. That gap, rather than raw latency, is usually what decides whether a
+cheap provider is viable for a given workload --- and it is the number almost
+nobody measures before committing.
+\end{note}
+
+\subsection{The question the numbers answer}
+
+Not ``which provider is fastest.'' The useful question is: \emph{for which of my
+own workloads would the cheapest option be sufficient?} Write the answer here in
+prose once the tables are complete, because that sentence is the only part of
+this appendix you will still care about in six months.
