@@ -19,8 +19,7 @@ for putting a human in front of any of them.
 \begin{verifybox}
 As in Chapter~\ref{ch:first-agent}, the listings here are transcribed from
 Microsoft documentation and published samples rather than compiled by the author
-against \mafcore{}. The MCP client construction in \S\ref{sec:mcp-client} in
-particular has two forms in circulation. Compile before you copy.
+against \mafcore{}. Compile before you copy.
 \end{verifybox}
 
 % ============================================================
@@ -328,13 +327,12 @@ using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
 
 // 1. Connect. StdioClientTransport launches a local server process.
-await using var mcpClient = await McpClientFactory.CreateAsync(
-    new StdioClientTransport(new()
-    {
-        Name = "GitHub",
-        Command = "npx",
-        Arguments = ["-y", "@modelcontextprotocol/server-github"]
-    }));
+await using var mcpClient = await McpClient.CreateAsync(new StdioClientTransport(new()
+{
+    Name = "GitHub",
+    Command = "npx",
+    Arguments = ["-y", "@modelcontextprotocol/server-github"]
+}));
 
 // 2. Discover. Nothing is hardcoded.
 IList<McpClientTool> mcpTools = await mcpClient.ListToolsAsync();
@@ -346,13 +344,13 @@ AIAgent agent = chatClient.AsAIAgent(
     tools: [.. mcpTools]);
 \end{csharp}
 
-\begin{verifybox}
-\textbf{Two client constructors.} Published examples use both
-\api{McpClientFactory.CreateAsync(...)} and \api{McpClient.CreateAsync(...)}, and
-the transport constructor appears both with an object initialiser and with
-positional arguments. Check the SDK version you have pinned. The three-step shape
---- connect, discover, register --- is stable regardless.
-\end{verifybox}
+\begin{note}
+\textbf{\api{McpClient.CreateAsync}, not \api{McpClientFactory.CreateAsync}.}
+Both appear in published examples. The factory type is the older spelling; every
+current sample in the Agent Framework repository uses \api{McpClient.CreateAsync}
+with the transport options supplied as an object initialiser. The three-step
+shape --- connect, discover, register --- is stable across both.
+\end{note}
 
 Step two is the reason MCP is interesting. You do not write bindings for the
 server's tools; you ask it what it has. A server that gains a tool next month

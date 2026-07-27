@@ -102,23 +102,24 @@ afternoon.
 
 \subsection{The agent forgets everything between turns}
 
-You are not passing a thread. \api{RunAsync} without an \api{AgentThread} creates
-a throwaway one that lives only for that call. See \S\ref{sec:threads}.
+You are not passing a session. \api{RunAsync} without an \api{AgentSession}
+creates a throwaway one that lives only for that call. See
+\S\ref{sec:sessions}.
 
-\subsection{Deserialising a thread fails, or behaves oddly}
+\subsection{Deserialising a session fails, or behaves oddly}
 
-The thread must be resumed by an \emph{identically configured} agent instance.
+The session must be resumed by an \emph{identically configured} agent instance.
 If construction differs between the process that saved and the process that
 loads --- a different model, different instructions, a different provider --- the
 failure may be silent rather than thrown. Register the agent once in DI and build
 it from configuration that cannot drift.
 
-\subsection{Serialised threads are far smaller than expected}
+\subsection{Serialised sessions are far smaller than expected}
 
-The provider is storing conversations server-side, so the serialised thread
+The provider is storing conversations server-side, so the serialised session
 contains an identifier rather than the messages. This is correct behaviour, not
 data loss --- but it means your backup contains a pointer to state you do not
-own, and that the remote thread is yours to delete.
+own, and that the remote conversation is yours to delete.
 
 \subsection{Responses degrade during a long tool-calling chain}
 

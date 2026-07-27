@@ -95,10 +95,10 @@ AIAgent agent = new AIProjectClient(new Uri(endpoint), new DefaultAzureCredentia
 \end{csharp}
 
 \begin{warning}
-Foundry stores conversations server-side. A serialised \api{AgentThread} from a
+Foundry stores conversations server-side. A serialised \api{AgentSession} from a
 Foundry agent therefore contains an \emph{identifier}, not the messages --- and
-cleaning up the remote thread is your responsibility, not the framework's. See
-\S\ref{sec:threads}.
+cleaning up the remote conversation is your responsibility, not the framework's.
+See \S\ref{sec:sessions}.
 \end{warning}
 
 \subsection{Anthropic}
@@ -139,7 +139,7 @@ var agent = chatClient
     .AsBuilder()
     .UseFunctionInvocation()
     .Build()
-    .CreateAIAgent(
+    .AsAIAgent(
         name: "ToolUser",
         instructions: "You are a useful agent.",
         tools: [AIFunctionFactory.Create(GetWeather)]);
@@ -161,18 +161,18 @@ What can be stated without measurement.
 \small
 \begin{tabularx}{\linewidth}{@{}lXX@{}}
 \toprule
-\textbf{Provider} & \textbf{Thread storage} & \textbf{Auth} \\
+\textbf{Provider} & \textbf{Session storage} & \textbf{Auth} \\
 \midrule
-Ollama & In-memory --- serialised thread contains the messages & None \\
+Ollama & In-memory --- serialised session contains the messages & None \\
 Azure OpenAI & In-memory & Entra credential or key \\
 OpenAI & In-memory, or server-side with Responses & API key \\
-Foundry Agents & Server-side --- serialised thread contains an id & Entra credential \\
+Foundry Agents & Server-side --- serialised session contains an id & Entra credential \\
 Anthropic & Unverified & API key \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-The thread-storage column is the one with architectural consequences. It
+The session-storage column is the one with architectural consequences. It
 determines the size and content of what you persist, whether conversation data
 leaves your infrastructure, and whether you have remote state to clean up.
 
