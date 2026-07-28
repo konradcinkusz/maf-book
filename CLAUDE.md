@@ -10,16 +10,21 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, **4** | 5, 6, 7, 8, 9, 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, **5** | 6, 7, 8, 9, 10, 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 131 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 149 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 12 screenshots outstanding (`make shots`)
-- 9 `verifybox` blocks
+- 15 screenshots outstanding (`make shots`)
+- 12 `verifybox` blocks
+
+Chapter 5 added zero overfull hboxes — the book's total is unchanged at 39. Check
+any new chapter the same way: build once with the chapter stubbed out, once with
+it in, and diff the `Overfull` lists. Attributing boxes by reading `main.log`
+nesting does not work.
 
 ---
 
@@ -123,6 +128,70 @@ occurrences to 0 in upstream samples. Chapter 3 §3.6 verifybox deleted.
 
 ---
 
+## Workflow API — RESOLVED (Chapter 5 pass, July 2026)
+
+Verified by reading `dotnet/src/Microsoft.Agents.AI.Workflows/` and
+`.Workflows.Generators/` plus `dotnet/samples/03-workflows/` at `main`. Several
+things differ from what the Chapter 5 brief assumed; all of them are now written
+into the chapter and are reusable by Chapters 6, 7 and 8.
+
+**Builder methods take `ExecutorBinding`, not `Executor`.** `ExecutorBinding` has
+implicit conversions from `Executor`, `AIAgent`, `RequestPort` and `string` (a
+placeholder bound later). *That* is the mechanism behind "an agent is an executor;
+so is a function" — it is not a metaphor, it is four `implicit operator`
+declarations. Chapter 7 should lean on this: the four orchestration patterns are
+builders over the same binding type.
+
+**Executor routing is configured through `ProtocolBuilder` / `ConfigureProtocol`,**
+not the older `RouteBuilder` / `ConfigureRoutes` (`RouteBuilder` still exists,
+reachable via `ProtocolBuilder.ConfigureRoutes`). Base types are `Executor`,
+`Executor<TIn>` and `Executor<TIn,TOut>`; the handler is
+`HandleAsync(msg, IWorkflowContext, CancellationToken)`.
+
+**Type mismatch on an edge is a silent drop.** No exception, no warning event.
+The only evidence is an OTel tag on the edge span, whose values are `delivered`,
+`dropped type mismatch`, `dropped target mismatch`, `dropped condition false`,
+`exception`, `buffered` (`Observability/EdgeRunnerDeliveryStatus.cs`). Chapter 8
+owes a worked "find the dropped delivery in the trace" section — Chapter 5 §5.3
+promises it.
+
+**`Build()` validates reachability only.** The source carries a long comment
+setting out four honest reasons why edge type-compatibility cannot be checked at
+build time, the binding one being that executors may come from async factories
+while `Build()` must stay synchronous for DI. Quoted in substance in §5.3; worth
+re-reading before writing anything that claims the framework validates graphs.
+
+**Routing matches the runtime type exactly**, via `message.GetType()`. An
+interface-typed handler never fires. Agent nodes emit `List<ChatMessage>`, so
+downstream executors must declare that, not `IEnumerable<ChatMessage>`.
+
+**Agents need a `TurnToken`.** They accumulate `ChatMessage`s and only take a turn
+on receiving `TurnToken`. Every executor→agent edge therefore needs an adapter
+sending both, declared with `[SendsMessage(typeof(...))]`.
+
+**The source generators are real and undocumented elsewhere.** `[MessageHandler]`
+on methods of a `partial` executor; seven diagnostics `MAFGENWF001`–`MAFGENWF007`
+(missing `IWorkflowContext`, bad return type, not `partial`, not an `Executor`,
+too few parameters, `ConfigureProtocol` already defined, `static` handler). The
+generator package is `<DevelopmentDependency>true</DevelopmentDependency>` and is
+packed to `analyzers/dotnet/cs`; upstream samples reference it explicitly as an
+analyzer *in addition to* the Workflows package, which suggests it does not flow
+transitively. **Not confirmed from a clean project — this is the one open
+verifybox in §5.6.**
+
+**Execution:** `InProcessExecution.RunAsync` / `RunStreamingAsync` /
+`OpenStreamingAsync` / `ResumeAsync`, with environments `OffThread` (default),
+`Lockstep` and `Concurrent`. `Lockstep` is the one for tests.
+
+**Supersteps.** Messages sent during a step are delivered in the next one; state
+goes through `QueueStateUpdateAsync` and is applied at the boundary. The boundary
+is the checkpoint point — which is the setup Chapter 6 pays off.
+
+**`workflow.ToMermaidString()` / `.ToDotString()`** exist
+(`Visualization/WorkflowVisualizer.cs`). Cheap and worth using in later chapters.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -158,23 +227,6 @@ Fold in during the version-bump pass (item 4).
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
 
-### Chapter 5 — Workflows: Executors and Edges
-**Angle:** the framework's actual differentiator. Budget the most time here.
-An agent is an executor; so is a plain function — that symmetry is the whole idea.
-
-**Already verified:** `Microsoft.Agents.AI.Workflows` stable on the core train;
-`Microsoft.Agents.AI.Workflows.Generators` provides Roslyn source generators for
-**compile-time route configuration** — this deserves its own section, it is a real
-differentiator and nobody writes about it.
-
-**Verify:** `WorkflowBuilder` API; executor base type; edge declaration; typed
-message semantics and what happens on mismatch; streaming event types.
-
-**Build:** the five-step ladder in the stub, ending in a 6–8 node document
-pipeline worth demoing in an interview.
-
----
-
 ### Chapter 6 — Workflows: Durability and Control
 **Angle:** kill a running workflow and have it finish correctly anyway.
 
@@ -194,6 +246,15 @@ run means state lives outside the checkpoint — a static field, a cached client
 an external store. Executors must take dependencies explicitly. Chapter 4 §4.1
 sets this up as a taxonomy error and points forward here; pay it off.
 
+**Owed from Chapter 5:** §5.1 establishes the superstep as the unit of durability
+and states that resume happens *at a superstep boundary, not mid-executor* —
+hence executors must be re-runnable. §5.2 has a warning that instance-field state
+is not captured unless the executor overrides `OnCheckpointingAsync`. Both are
+promises this chapter has to make good on. The lifecycle hooks to cover are
+`InitializeAsync`, `OnMessageDeliveryStartingAsync`,
+`OnMessageDeliveryFinishedAsync`, `OnCheckpointingAsync`,
+`OnCheckpointRestoredAsync`, plus `IResettableExecutor`.
+
 ---
 
 ### Chapter 7 — Multi-Agent Orchestration
@@ -212,6 +273,14 @@ well for 1.0. This is the strongest external-publication material in the book.
 **Cross-reference:** Chapter 3 §3.7 draws the delegation-vs-transfer line
 (`AsAIFunction` is delegation; handoff is transfer). Pay that off here.
 
+**Owed from Chapter 5:** the chapter argues the patterns are builders over the
+same graph. The evidence is in the source and should be shown, not asserted:
+`SequentialWorkflowBuilder`, `ConcurrentWorkflowBuilder`,
+`GroupChatWorkflowBuilder`, `HandoffWorkflowBuilder` and `MagenticWorkflowBuilder`
+all sit beside `WorkflowBuilder` in the same folder and all derive from
+`OrchestrationBuilderBase`. Note that **Magentic is a fifth pattern** the current
+brief does not mention — decide whether it earns a section.
+
 ---
 
 ### Chapter 8 — Middleware and Observability
@@ -228,6 +297,13 @@ activity source. The attributes are real and already documented there —
 `after.tokens`, `.before.messages` / `.after.messages`, `compaction.duration_ms`,
 plus `compaction.groups_summarized` and `compaction.summary_length` on the
 summarisation path. Source: `Microsoft.Agents.AI/Compaction/CompactionTelemetry.cs`.
+
+**Owed from Chapter 5:** §5.3 tells the reader that a workflow producing no output
+is usually a silently dropped message, and that the way to find it is to look for
+edge spans whose delivery status is not `delivered`. It names this chapter. Cover
+the workflow activity source alongside the agent one, and show the actual span
+tree for a fan-out/fan-in run — `OpenTelemetryWorkflowBuilderExtensions` and
+`Observability/` in the Workflows package are the starting points.
 
 **Verify:** the three middleware levels (agent, function, chat client) and their
 registration; which spans and attributes are actually emitted.

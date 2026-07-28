@@ -5,29 +5,853 @@
 The chapter the rest of the book was waiting for.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+Everything up to this point has been a single agent with tools. That is a
+capable thing, and for a large class of problems it is the right thing. It is
+also, architecturally, a loop: the model decides, calls something, looks at the
+result, decides again. The control flow lives inside the model.
+
+This chapter is about the case where you want the control flow to live in your
+code. Not because the model is bad at deciding --- often it is fine --- but
+because you need to know in advance what can happen, replay what did happen, run
+two things at once, and put a person in the middle. None of that is expressible
+in a loop whose next step is chosen by a language model.
+
+The framework's answer is a directed graph of executors joined by edges. The
+claim this chapter makes, and then defends, is that this is the genuinely
+differentiated part of the Microsoft Agent Framework --- the part that is hard to
+reproduce with a prompt and a for-loop, and the part most worth your time.
+
+\begin{verifybox}
+The listings in this chapter were derived by reading the source of
+\pkg{Microsoft.Agents.AI.Workflows} and \pkg{Microsoft.Agents.AI.Workflows.Generators}
+at the pinned train, together with the workflow samples in the upstream
+repository, rather than from documentation prose. Type and member names are
+therefore reliable. The author has not compiled the composite examples as a
+single working solution. Sections \S\ref{sec:wf-generators} and
+\S\ref{sec:wf-pipeline} are the least verified and are flagged individually.
+\end{verifybox}
+
+% ============================================================
 \section{Why a graph and not a chain}
+\label{sec:wf-why-graph}
+\index{workflow!graph model}
 
+The obvious design for multi-step agent work is a chain: do this, then that, then
+the other. Several frameworks offer exactly that and it reads beautifully in a
+README. It fails on four things, and each failure is a structural one rather than
+a missing feature.
+
+\textbf{Branches.} A chain has one successor. Real processes have several, chosen
+at runtime --- the spam classifier that routes three ways, the triage step that
+picks a specialist. You can fake it with an \code{if} inside a step, but then the
+branch is invisible to the runtime: it cannot be drawn, validated, traced, or
+resumed at the branch point.
+
+\textbf{Concurrency.} Two independent analyses of the same document should run at
+once. In a chain they cannot, because a chain's only ordering primitive is
+sequence.
+
+\textbf{Joins.} Once you have concurrency you need somewhere for the results to
+meet, with a defined synchronisation rule. That is a graph construct --- a
+barrier --- and it has no chain equivalent.
+
+\textbf{Interruption.} A run that pauses for human approval and resumes an hour
+later in a different process needs its position to be a value you can serialise.
+``Where are we in the chain'' is a program counter; ``which nodes have pending
+messages'' is data. Only the second survives a process restart. This is
+Chapter~\ref{ch:workflows-advanced}'s subject, and the graph model is what makes
+it possible at all.
+
+\subsection{Supersteps}
+\label{sec:wf-supersteps}
+\index{workflow!superstep}
+
+The execution model is not ``walk the graph''. It is a sequence of
+\emph{supersteps}, which is worth internalising early because it explains most of
+the framework's otherwise-surprising behaviour.
+
+A superstep proceeds in three phases:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Every executor with pending messages is delivered its messages and runs.
+      Within a superstep these runs are independent and may be concurrent.
+\item Messages emitted during the superstep are buffered. They are \emph{not}
+      delivered to their targets in the same superstep.
+\item The superstep ends. Buffered messages become the pending messages of the
+      next superstep, queued state updates are applied, and --- if checkpointing
+      is configured --- a checkpoint may be taken.
+\end{enumerate}
+
+The runtime announces each boundary. Two events carry the step number:
+
+\begin{itemize}[leftmargin=1.4em,nosep]
+\item \api{SuperStepStartedEvent}
+\item \api{SuperStepCompletedEvent}
+\end{itemize}
+
+\medskip
+\noindent
+The completion event's payload reports which executors were activated, which were
+instantiated for the first time, and whether anything remains pending:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Member} & \textbf{Meaning} \\
+\midrule
+\code{ActivatedExecutors} & Executors that ran during the step \\
+\code{InstantiatedExecutors} & Executors constructed for the first time \\
+\code{StateUpdated} & Whether queued state updates were applied \\
+\code{HasPendingMessages} & Whether another step will follow \\
+\code{HasPendingRequests} & Whether the run is blocked on external input \\
+\code{Checkpoint} & The checkpoint taken at this boundary, if any \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+The superstep boundary is the unit of durability, the unit of concurrency, and
+the unit of observability all at once. When Chapter~\ref{ch:workflows-advanced}
+resumes a workflow from a checkpoint, it resumes at a superstep boundary --- not
+mid-executor. That is why a partially completed executor cannot be resumed and
+why executors should be written to be re-runnable.
+\end{note}
+
+The practical consequence for this chapter: \emph{a message you send is not
+visible to its target until the next superstep}. Code that sends a message and
+then expects to observe its effect is wrong, and it is wrong in a way that looks
+like a race condition rather than a design error.
+
+% ============================================================
 \section{Executors}
-% The unit of work. An agent is an executor; so is a function. That symmetry.
+\label{sec:wf-executors}
+\index{Executor@\texttt{Executor}}
 
+An executor is the unit of work: something that receives a typed message, does
+something, and optionally produces a typed result. The base type is
+\api{Executor}, and it has two generic conveniences that cover almost everything
+you will write.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Base type} & \textbf{Use when} \\
+\midrule
+\code{Executor} & The executor handles more than one input type, or configures
+its own routing \\[4pt]
+\code{Executor<TIn>} & One input type, no return value --- side effects and
+explicit sends only \\[4pt]
+\code{Executor<TIn,TOut>} & One input type, one output type; the return value is
+sent along outgoing edges \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The two-parameter form is the one to reach for. Its handler signature is the
+whole contract:
+
+\begin{csharp}[caption={The smallest useful executor}, label={lst:wf-executor-basic}]
+internal sealed class UppercaseExecutor() : Executor<string, string>("Uppercase")
+{
+    public override ValueTask<string> HandleAsync(
+        string message,
+        IWorkflowContext context,
+        CancellationToken cancellationToken = default)
+    {
+        // The return value is sent as a message along every outgoing edge.
+        return ValueTask.FromResult(message.ToUpperInvariant());
+    }
+}
+\end{csharp}
+
+Three things in that signature deserve comment. The identifier passed to the base
+constructor is the executor's identity in the graph --- it appears in every event,
+every trace, and every checkpoint, so name it as you would name a log source, not
+as you would name a variable. The \api{IWorkflowContext} is the only sanctioned
+route to the outside: events, messages, state, and halting all go through it. And
+the return value is not a return value in the ordinary sense --- it is a message
+emission, which means an executor that returns a value it did not intend to
+broadcast has just introduced a bug that the type system will not catch.
+
+\subsection{The context}
+\label{sec:wf-context}
+\index{IWorkflowContext@\texttt{IWorkflowContext}}
+
+\api{IWorkflowContext} is small, which is a good sign. The members you will use
+constantly:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Member} & \textbf{Purpose} \\
+\midrule
+\code{SendMessageAsync} & Emit a message, optionally to a named target \\
+\code{YieldOutputAsync} & Emit a workflow output without ending the run \\
+\code{AddEventAsync} & Raise a custom event onto the stream \\
+\code{QueueStateUpdateAsync} & Write scoped state, applied at step end \\
+\code{ReadStateAsync} & Read scoped state \\
+\code{RequestHaltAsync} & Ask the runtime to stop \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Note the word \emph{queue} in the state-writing method. State updates are applied
+at the superstep boundary, not immediately, for the same reason messages are:
+so that the boundary is a consistent point to checkpoint. Reading back a value
+you queued in the same superstep is not guaranteed to give you the new one.
+
+\begin{warning}
+State written through \api{QueueStateUpdateAsync} is captured by checkpointing.
+State written to an instance field on your executor is not, unless you handle
+\code{OnCheckpointingAsync} yourself. This is the single most common way to build
+a workflow that resumes into a subtly wrong state, and
+Chapter~\ref{ch:workflows-advanced} is largely about it. The rule for this
+chapter: \emph{if it matters after a restart, it goes in the context}.
+\end{warning}
+
+\subsection{A function is an executor}
+\label{sec:wf-function-executor}
+
+The symmetry the chapter opened with is not a metaphor. It is implemented as a
+set of implicit conversions on \api{ExecutorBinding}, the type every builder
+method actually accepts:
+
+\begin{csharp}[caption={What can be a node}, label={lst:wf-bindings}]
+// All four of these are implicitly convertible to ExecutorBinding,
+// so all four can be passed to AddEdge:
+
+Executor  custom = new UppercaseExecutor();   // a class you wrote
+AIAgent   agent  = chatClient.AsAIAgent(...); // an agent
+RequestPort port = ...;                       // a human-in-the-loop port
+string    later  = "Summariser";              // a placeholder, bound later
+\end{csharp}
+
+An agent becomes a node because \api{AIAgent} converts to a binding. A plain
+function becomes a node through \api{FunctionExecutor}, which wraps a delegate
+with the same handler shape. A string becomes a \emph{placeholder} --- a node
+declared now and bound to an implementation later, which is what makes
+dependency-injected and declaratively loaded graphs possible.
+
+That is the whole idea, and it has a practical payoff worth stating plainly:
+\textbf{you can replace an agent with a function, or a function with an agent,
+without touching the graph}. When a step turns out to be deterministic, delete
+the model call. When a deterministic step turns out to need judgement, promote it.
+The edges do not change.
+
+\begin{note}
+This is also the cheapest test-seam in the framework. A workflow whose model
+calls are agents is untestable without a model; the same workflow with those
+nodes bound to stub functions runs in a unit test in milliseconds. Design the
+graph so that swap is a one-line change --- placeholders make it one.
+\end{note}
+
+% ============================================================
 \section{Typed messages}
-% What passes along an edge, and what happens on type mismatch
+\label{sec:wf-messages}
+\index{workflow!message typing}
 
+Edges carry typed messages, and the routing is by \emph{runtime} type. An
+executor declares which types it can handle; the edge runner asks the target
+whether it can handle the message's actual type, and delivers only if it can.
+
+This is where the first real gotcha lives, and it is worth the space.
+
+\subsection{What happens on a type mismatch}
+\label{sec:wf-mismatch}
+
+Nothing. That is the answer, and it is not the answer most engineers expect.
+
+If a message arrives at an edge whose target cannot handle its type, the message
+is \emph{silently dropped}. No exception, no warning event, no failed executor.
+The run continues, the downstream node simply never fires, and the workflow
+either produces no output or produces a partial one. The only evidence is a
+telemetry tag: the edge delivery span is tagged with a delivery status, whose
+values include the following.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Status} & \textbf{Meaning} \\
+\midrule
+\code{delivered} & The target accepted the message type \\
+\code{dropped type mismatch} & The target cannot handle this runtime type \\
+\code{dropped target mismatch} & The message was addressed to a different target \\
+\code{dropped condition false} & The edge's condition returned false \\
+\code{buffered} & Held at a barrier, awaiting other inputs \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warning}
+\textbf{A workflow that produces no output is more often a type mismatch than a
+logic error.} The debugging procedure is: turn on the workflow activity source,
+run it, and look for edge spans whose delivery status is not \code{delivered}.
+Chapter~\ref{ch:observability} wires this up properly; until then, a breakpoint in
+each executor's handler tells you which node never fired, and the edge into it is
+the one to inspect.
+\end{warning}
+
+Why does the builder not catch this at build time? Because it genuinely cannot,
+and the framework's own source is unusually candid about why. Four reasons, in
+the order they bite:
+
+\begin{itemize}[leftmargin=1.4em]
+\item Executors are not required to declare their produced types exhaustively, so
+      the set of types flowing out of a node is not statically known.
+\item Conditional edges and target selectors route at runtime by value, not by
+      type.
+\item Fan-in edges are intended to grow aggregation strategies that transform
+      types on the way through.
+\item Executors may be created by asynchronous factories and register their
+      handlers at construction, so their accepted types are not knowable until
+      they are instantiated --- and \code{Build()} is synchronous, because it must
+      be, to work with dependency injection.
+\end{itemize}
+
+The last one is the real blocker and it is an honest trade: synchronous,
+DI-compatible construction was worth more than build-time type validation. Knowing
+that is what tells you where to spend your own effort --- which is
+\S\ref{sec:wf-generators}.
+
+\subsection{Exact types, not assignable ones}
+
+Routing matches the runtime type exactly. An executor whose input type is
+declared as an interface will \emph{not} receive an implementation of it --- a
+node expecting \code{IEnumerable<ChatMessage>} never sees a
+\code{List<ChatMessage>}, even though the assignment would compile.
+
+This matters immediately, because the agent host node emits its response messages
+as a \code{List<ChatMessage>}. An executor downstream of an agent must declare
+that type, not an interface over it:
+
+\begin{csharp}[caption={Declaring the type an agent actually sends}, label={lst:wf-agent-downstream}]
+// Correct: matches the runtime type the agent host emits.
+internal sealed class FinalOutputExecutor()
+    : Executor<List<ChatMessage>, string>("FinalOutput")
+{
+    public override ValueTask<string> HandleAsync(
+        List<ChatMessage> message,
+        IWorkflowContext context,
+        CancellationToken cancellationToken = default)
+    {
+        string combined = string.Join("\n", message.Select(m => m.Text ?? "")).Trim();
+        return ValueTask.FromResult(combined);
+    }
+}
+\end{csharp}
+
+\subsection{The chat protocol}
+\label{sec:wf-chat-protocol}
+\index{workflow!chat protocol}
+
+Agents in a workflow do not run when they receive a message. They accumulate
+messages, and run when they receive a \api{TurnToken}. This is deliberate --- it
+is what lets several upstream nodes contribute to one agent turn --- but it means
+connecting a plain executor to an agent requires an adapter that does two things:
+
+\begin{csharp}[caption={Adapting a plain type to the chat protocol}, label={lst:wf-adapter}]
+[SendsMessage(typeof(ChatMessage))]
+[SendsMessage(typeof(TurnToken))]
+internal sealed class StringToChatMessageExecutor(string id) : Executor<string>(id)
+{
+    public override async ValueTask HandleAsync(
+        string message,
+        IWorkflowContext context,
+        CancellationToken cancellationToken = default)
+    {
+        // 1. The content the agent should see.
+        await context.SendMessageAsync(
+            new ChatMessage(ChatRole.User, message),
+            cancellationToken: cancellationToken);
+
+        // 2. The signal to take a turn. Without this the agent never runs.
+        await context.SendMessageAsync(
+            new TurnToken(emitEvents: true),
+            cancellationToken: cancellationToken);
+    }
+}
+\end{csharp}
+
+The \code{SendsMessage} attributes declare types this executor emits through the
+context rather than through its return value. They are not decoration: they feed
+the protocol descriptor the runtime uses for validation and visualisation, and
+omitting them is how a graph comes to be drawn wrong.
+
+\begin{note}
+\textbf{Adapter nodes are the most common thing you will write and the most
+common thing missing from a broken workflow.} Whenever an edge crosses between
+plain types and the chat protocol --- in either direction --- there is an adapter
+on it. If a workflow mixing executors and agents hangs, look for a missing
+\api{TurnToken} before looking anywhere else.
+\end{note}
+
+% ============================================================
 \section{Edges}
+\label{sec:wf-edges}
+\index{workflow!edges}
+
+Four kinds, and they compose.
+
 \subsection{Direct}
+
+The default. One source, one target, everything the source emits that the target
+can handle.
+
+\begin{csharp}[caption={A direct edge}, label={lst:wf-edge-direct}]
+builder.AddEdge(analyse, summarise);
+\end{csharp}
+
+There is also \api{AddChain}, which takes a list and wires it end to end --- a
+convenience worth using for the linear stretches that most real graphs contain.
+
 \subsection{Conditional}
+
+A generic overload takes a predicate over the message. The edge delivers only
+when the predicate holds; otherwise the delivery is dropped with the
+\code{dropped condition false} status.
+
+\begin{csharp}[caption={A conditional edge}, label={lst:wf-edge-conditional}]
+builder.AddEdge<AnalysisResult>(
+    analyse,
+    archive,
+    condition: result => result?.Length <= LongDocumentThreshold);
+\end{csharp}
+
+For more than two outcomes, \api{AddSwitch} reads better than a stack of
+conditions and makes the default case explicit:
+
+\begin{csharp}[caption={Switch-case routing}, label={lst:wf-edge-switch}]
+builder.AddSwitch(classify, sw => sw
+    .AddCase<Classification>(c => c?.Decision == Decision.Clean,   assistant)
+    .AddCase<Classification>(c => c?.Decision == Decision.Spam,    handleSpam)
+    .WithDefault(handleUncertain));
+\end{csharp}
+
+\begin{warning}
+A switch without \code{WithDefault} is a switch that silently drops anything no
+case matched --- the same failure mode as a type mismatch, with the same absence
+of diagnostics. Always write the default, even when you believe it is
+unreachable. Especially then: the value being switched on usually came from a
+model.
+\end{warning}
+
 \subsection{Fan-out}
+
+One source, several targets. In its simplest form every target gets the message;
+with a target selector, the source chooses which subset by index:
+
+\begin{csharp}[caption={Fan-out, unconditional and selective}, label={lst:wf-edge-fanout}]
+// Everyone gets it, and the two run concurrently.
+builder.AddFanOutEdge(start, [physicist, chemist]);
+
+// Or choose targets per message: (message, targetCount) => indices.
+builder.AddFanOutEdge<AnalysisResult>(
+    analyse,
+    [handleSpam, assistant, summarise, handleUncertain],
+    targetSelector: (result, count) => SelectTargets(result, count));
+\end{csharp}
+
+Fan-out is how concurrency is expressed. The targets run in the same superstep;
+there is no ordering between them and you must not write code that assumes one.
+
 \subsection{Fan-in and aggregation}
 
+Several sources, one target, with a barrier: the target does not run until every
+declared source has delivered.
+
+\begin{csharp}[caption={A barrier join}, label={lst:wf-edge-fanin}]
+builder.AddFanInBarrierEdge([physicist, chemist], aggregate);
+\end{csharp}
+
+The aggregating node receives the collected messages. Two properties of the
+barrier are worth knowing before you rely on it: it filters by type like any
+other edge, so a source whose message the target cannot handle contributes
+nothing and the barrier may never release; and the barrier is per-run, not
+per-message, so a graph with a cycle through a barrier needs care.
+
+\needdiagram{wf-edge-kinds}{The four edge kinds, and what each one does at a
+superstep boundary}{Four small graphs side by side: direct (A->B); conditional
+(A->B labelled with a predicate, A->C for the else); fan-out (A->{B,C} with both
+in one superstep band); fan-in barrier ({B,C}->D with D shown in the following
+superstep band). Shade superstep bands so the timing difference between fan-out
+and fan-in is visible.}
+
+% ============================================================
 \section{\texorpdfstring{\api{WorkflowBuilder}}{WorkflowBuilder}}
+\label{sec:wf-builder}
+\index{WorkflowBuilder@\texttt{WorkflowBuilder}}
 
+The builder is deliberately thin. It takes a start node in its constructor,
+accumulates edges, and validates on \code{Build()}.
+
+\begin{csharp}[caption={Building and running a graph}, label={lst:wf-builder}]
+WorkflowBuilder builder = new(uppercase);
+
+Workflow workflow = builder
+    .AddEdge(uppercase, reverse)
+    .WithOutputFrom(reverse)
+    .WithName("text-pipeline")
+    .Build();
+
+await using StreamingRun run =
+    await InProcessExecution.RunStreamingAsync(workflow, input: "Hello, World!");
+\end{csharp}
+
+\api{WithOutputFrom} marks which nodes' emissions count as workflow output. It is
+not optional in practice: a graph with no output nodes runs to completion and
+tells you nothing.
+
+\subsection{What Build validates}
+
+One thing, and it is worth knowing exactly which: \textbf{reachability}. Every
+bound executor must be reachable from the start node, or \code{Build()} throws
+with the offending identifiers listed. Placeholders must have been bound. Nothing
+else is checked --- in particular, and as \S\ref{sec:wf-mismatch} explained, no
+type compatibility along edges.
+
+The check can be turned off with \code{Build(validateOrphans: false)}. Resist
+this. An unreachable executor is almost always a missing edge, and the exception
+naming it is the most useful diagnostic the builder produces.
+
+\subsection{Running}
+
+Three axes: streaming or not, and which execution mode.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Entry point} & \textbf{Gives you} \\
+\midrule
+\code{RunAsync} & A completed \api{Run}; events collected, inspected afterwards \\
+\code{RunStreamingAsync} & A \api{StreamingRun}; events as they happen \\
+\code{OpenStreamingAsync} & A run with no initial input, fed by you \\
+\code{ResumeAsync} & A run continued from a checkpoint (Ch.~\ref{ch:workflows-advanced}) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+The execution environment is chosen by static property on
+\api{InProcessExecution}: \code{OffThread} (the default), \code{Lockstep}, and
+\code{Concurrent}. \code{Lockstep} is the one to know about --- it makes superstep
+boundaries deterministic, which is what you want in tests.
+
+\begin{note}
+Use \code{Lockstep} for every workflow unit test you write. The default
+off-thread mode is right for production and wrong for assertions: a test that
+passes under concurrency but asserts on ordering is a test that will fail in CI
+on a busier machine, and you will spend an afternoon on it.
+\end{note}
+
+% ============================================================
 \section{Compile-time route validation}
-% The Roslyn source generators; a real differentiator worth a section
+\label{sec:wf-generators}
+\index{workflow!source generators}
+\index{Workflows.Generators@\texttt{Workflows.Generators}}
 
+This section covers the part of the framework nobody writes about, and it is the
+direct answer to \S\ref{sec:wf-mismatch}: if the builder cannot validate routing
+at build time, move the validation into the compiler.
+
+\pkg{Microsoft.Agents.AI.Workflows.Generators} is a Roslyn source generator. You
+mark handler methods with \code{[MessageHandler]}, declare the class
+\code{partial}, and the generator writes the routing configuration that you would
+otherwise write by hand --- and, more importantly, emits compiler diagnostics when
+your handlers do not have a shape the runtime can route.
+
+\begin{csharp}[caption={Multiple handlers, generated routing}, label={lst:wf-message-handler}]
+internal sealed partial class WriterExecutor : Executor
+{
+    private readonly AIAgent _agent;
+
+    public WriterExecutor(AIAgent agent) : base("Writer") => this._agent = agent;
+
+    [MessageHandler]
+    public async ValueTask<ChatMessage> HandleInitialRequestAsync(
+        string message, IWorkflowContext context, CancellationToken ct = default)
+        => await this.WriteAsync(new ChatMessage(ChatRole.User, message), ct);
+
+    [MessageHandler]
+    public async ValueTask<ChatMessage> HandleRevisionRequestAsync(
+        CriticDecision decision, IWorkflowContext context, CancellationToken ct = default)
+        => await this.WriteAsync(BuildRevisionPrompt(decision), ct);
+}
+\end{csharp}
+
+Two handlers, two input types, one node. Without the generator this is a manual
+\code{ConfigureProtocol} override registering both routes; with it, the routes are
+derived from the signatures and cannot drift from them.
+
+\subsection{The diagnostics}
+
+Seven, and they are the reason to use this rather than the generated boilerplate.
+Each is a build error or warning at the offending method, in the editor, before
+anything runs.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{ID} & \textbf{Condition} \\
+\midrule
+\code{MAFGENWF001} & Handler is missing its \api{IWorkflowContext} second parameter \\
+\code{MAFGENWF002} & Handler returns something other than void, \code{ValueTask}, or \code{ValueTask<T>} \\
+\code{MAFGENWF003} & Class has handlers but is not declared \code{partial} \\
+\code{MAFGENWF004} & Handler is on a class that does not derive from \api{Executor} \\
+\code{MAFGENWF005} & Handler has fewer than two parameters \\
+\code{MAFGENWF006} & Class already defines \code{ConfigureProtocol}; handlers ignored \\
+\code{MAFGENWF007} & Handler is \code{static} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\code{MAFGENWF006} is the interesting one. It is a warning rather than an error,
+and it catches the case where someone adds a hand-written protocol override to a
+class that already had generated routes --- at which point the generated ones stop
+being used and half the node's handlers silently stop receiving messages. That is
+precisely the failure from \S\ref{sec:wf-mismatch}, caught at compile time
+instead of found in production.
+
+\needscreenshot{vs-generator-diagnostic-mafgenwf003}{A routing error caught at
+compile time rather than at run time}{In Visual Studio, an executor class with a
+\code{[MessageHandler]} method but no \code{partial} keyword. Capture the editor
+with the squiggle under the class name AND the Error List docked below showing
+code \code{MAFGENWF003} with its message. Both must be legible; crop tightly to
+the class declaration and the Error List row.}
+
+\subsection{Referencing it}
+
+The generator ships as a separate package marked as a development dependency, and
+is referenced as an analyzer rather than as a library:
+
+\begin{xmlcode}[caption={Adding the generator}, label={lst:wf-generator-ref}]
+<PackageReference Include="Microsoft.Agents.AI.Workflows.Generators"
+                  PrivateAssets="all" />
+\end{xmlcode}
+
+\begin{verifybox}
+The upstream samples add the generator as an explicit project reference with
+\code{OutputItemType="Analyzer"} even though the Workflows project itself
+references it, which suggests the analyzer does not flow transitively to package
+consumers and must be referenced directly. The author has not confirmed this from
+a clean \code{dotnet new} project against the published packages. If
+\code{[MessageHandler]} compiles but produces no routing, this reference is the
+first thing to check.
+\end{verifybox}
+
+\begin{note}
+The generator targets \code{netstandard2.0} against Roslyn 4.4, deliberately, so
+that it works on older SDKs. That is a compatibility decision with a cost: it
+cannot use newer analyzer APIs. It is mentioned here only because it explains why
+the generator is a separate package rather than folded into the main one.
+\end{note}
+
+% ============================================================
 \section{Streaming workflow events}
-% Observing a running graph
+\label{sec:wf-events}
+\index{workflow!events}
 
-\section{Worked example: a five-node document pipeline}
+A run is observed as an asynchronous stream of \api{WorkflowEvent}. The hierarchy
+is shallow and the useful members are these.
 
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Event} & \textbf{Raised when} \\
+\midrule
+\code{WorkflowStartedEvent} & The run begins \\
+\code{SuperStepStartedEvent} & A superstep opens \\
+\code{ExecutorInvokedEvent} & An executor is handed a message \\
+\code{ExecutorCompletedEvent} & An executor returns; carries its result \\
+\code{ExecutorFailedEvent} & An executor threw; carries the exception \\
+\code{AgentResponseUpdateEvent} & A token-level update from an agent node \\
+\code{AgentResponseEvent} & A complete agent response \\
+\code{SuperStepCompletedEvent} & A superstep closes; carries the step summary \\
+\code{RequestInfoEvent} & The run is blocked on external input \\
+\code{WorkflowOutputEvent} & A node marked as output emitted something \\
+\code{WorkflowWarningEvent} & A non-fatal problem \\
+\code{WorkflowErrorEvent} & The run failed \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{csharp}[caption={Watching a run}, label={lst:wf-watch}]
+await using StreamingRun run =
+    await InProcessExecution.RunStreamingAsync(workflow, input);
+
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
+{
+    switch (evt)
+    {
+        case ExecutorCompletedEvent done:
+            Console.WriteLine($"{done.ExecutorId}: {done.Data}");
+            break;
+
+        case ExecutorFailedEvent failed:
+            Console.Error.WriteLine($"{failed.ExecutorId} failed: {failed.Data}");
+            break;
+
+        case WorkflowOutputEvent output:
+            Console.WriteLine($"OUTPUT: {output}");
+            break;
+
+        case WorkflowErrorEvent error:
+            Console.Error.WriteLine(error.Exception?.ToString());
+            break;
+    }
+}
+\end{csharp}
+
+Note that \api{AgentResponseUpdateEvent} and \api{AgentResponseEvent} both derive
+from \api{WorkflowOutputEvent}. A \code{case WorkflowOutputEvent} arm placed
+above them in a switch will swallow every agent token, which produces a run that
+appears to emit enormous amounts of output and no result. Order the arms
+most-derived first.
+
+\subsection{Drawing the graph}
+\index{workflow!visualisation}
+
+A built workflow can render itself, which is the fastest way to check that the
+graph you described is the graph you meant:
+
+\begin{csharp}[caption={Rendering the graph}, label={lst:wf-visualise}]
+string mermaid = workflow.ToMermaidString();
+string dot     = workflow.ToDotString();
+\end{csharp}
+
+Paste the Mermaid output into any Markdown renderer, or feed the DOT to
+Graphviz. Do this once per workflow before running it. A missing edge is obvious
+in a picture and invisible in a builder chain.
+
+\needscreenshot{workflow-mermaid-pipeline}{The document pipeline as the runtime
+sees it}{Render the output of \code{ToMermaidString()} for the six-node pipeline
+from \S\ref{sec:wf-pipeline} in a Mermaid viewer. Show the graph with all node
+identifiers legible, including the fan-out to the two analysers and the fan-in
+barrier into the aggregator. No editor chrome; the diagram only.}
+
+% ============================================================
+\section{Worked example: a document pipeline}
+\label{sec:wf-pipeline}
+
+The example is built as a ladder. Each rung is runnable, and each adds exactly
+one concept, so that when a rung breaks you know which concept broke it.
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Two functions in sequence.} No agents, no models. Confirms the
+      build, the run, and the event stream. If this does not work nothing else
+      will, and it fails in seconds rather than after a model call.
+\item \textbf{Add an agent as the middle node.} The graph does not change shape.
+      What changes is that an adapter is now required on both sides of the agent
+      --- \S\ref{sec:wf-chat-protocol}. This rung is where most people first meet
+      the missing-\api{TurnToken} hang.
+\item \textbf{Add a conditional edge.} Route on a classification produced by the
+      agent. Write the default case. Then deliberately break the predicate and
+      watch the workflow produce nothing at all, so that the silent-drop
+      behaviour of \S\ref{sec:wf-mismatch} is something you have seen rather than
+      read about.
+\item \textbf{Fan out and join.} Two independent analysers on the same document,
+      a barrier, and an aggregator. Time this rung against rung three: the
+      difference is the point of the whole chapter.
+\item \textbf{Convert the executors to \code{[MessageHandler]} and turn on the
+      generator.} No behaviour change. Then remove a \code{partial} keyword and
+      confirm \code{MAFGENWF003}.
+\end{enumerate}
+
+\noindent
+The finished graph is six nodes: ingest, classify (agent), a fan-out to two
+analysers (agent and function), a barrier into an aggregator, and a formatter
+marked as the output node.
+
+\begin{verifybox}
+The pipeline listing below is assembled from patterns verified individually
+against the upstream samples, but the composite has not been compiled or run by
+the author. Treat it as a shape to type in rather than code to paste.
+\end{verifybox}
+
+\begin{csharp}[caption={The finished pipeline}, label={lst:wf-pipeline}]
+IngestExecutor    ingest    = new();
+ClassifyAdapter   toChat    = new("ToChat");
+AIAgent           classifier = chatClient.AsAIAgent(ClassifierOptions);
+ClassifyResult    fromChat  = new("FromChat");
+AIAgent           riskAgent = chatClient.AsAIAgent(RiskOptions);
+StatisticsExecutor stats    = new();
+AggregateExecutor aggregate = new();
+FormatExecutor    format    = new();
+
+Workflow workflow = new WorkflowBuilder(ingest)
+    .AddChain(ingest, [toChat, classifier, fromChat])
+    .AddFanOutEdge(fromChat, [riskAgent, stats])
+    .AddFanInBarrierEdge([riskAgent, stats], aggregate)
+    .AddEdge(aggregate, format)
+    .WithOutputFrom(format)
+    .WithName("document-pipeline")
+    .Build();
+\end{csharp}
+
+\needscreenshot{workflow-superstep-console}{Supersteps, visible}{Console output of
+the six-node pipeline, printing the superstep start and completion events
+alongside executor events. The capture must show at least one superstep in which
+two executors activated concurrently --- the fan-out step --- with the
+activated-executor list visible. Plain terminal, no IDE.}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:workflows-advanced}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Build rungs one and two. Then remove the \api{TurnToken} send from the
+      adapter and record exactly what the run does. This is the failure you will
+      meet most often; meet it deliberately once.
+\item Break an edge's types on purpose --- have a node emit \code{string} where
+      the target expects a record. Confirm that nothing is thrown and nothing is
+      logged. Then find the dropped delivery in the trace.
+\item Time rung three against rung four on the same document, ten runs each.
+      Report the median and the spread, not the best run. Appendix~\ref{app:providers}
+      has the table to fill in.
+\item Replace one agent node with a stub function binding and run the whole
+      pipeline with no model at all. Measure how long the test takes. Decide
+      whether your production graph is testable.
+\item Render \code{ToMermaidString()} for your graph before and after adding the
+      fan-in. Keep both. It is the cheapest documentation you will produce.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+A workflow is a directed graph of executors joined by typed edges, executed as a
+sequence of supersteps. The superstep boundary is simultaneously the unit of
+concurrency, the unit of durability, and the unit of observability --- which is
+why messages sent during a step are not delivered until the next one, and why
+state must be queued through the context rather than written to a field.
+
+An executor is anything that handles a typed message. A class you wrote, an
+agent, a plain function and a not-yet-bound placeholder are all convertible to
+the same binding type, which means a node's implementation can be swapped without
+touching the graph. That symmetry is the framework's central idea and its best
+test seam.
+
+Routing is by exact runtime type, and a message whose target cannot handle its
+type is dropped silently --- no exception, no event, only a telemetry tag. The
+builder validates reachability and nothing else, for four reasons the framework's
+own source sets out honestly, of which the binding one is that DI-compatible
+synchronous construction was worth more than build-time type checking.
+
+The generator package closes that gap: \code{[MessageHandler]} on a
+\code{partial} executor, routes derived from signatures, and seven compiler
+diagnostics that catch at build time the class of error that otherwise appears as
+a workflow producing no output. It is the least documented and most useful thing
+in this part of the framework.
+
+Four edge kinds cover the shapes: direct, conditional, fan-out for concurrency,
+fan-in barrier for joins. Always write the default case on a switch. Always mark
+output nodes. Always draw the graph before running it.
+
+Chapter~\ref{ch:workflows-advanced} takes the same graph and kills the process
+half way through.
