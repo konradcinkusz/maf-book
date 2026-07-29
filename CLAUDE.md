@@ -10,24 +10,25 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, 5, 6, **7** | 8, 9, 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, 5, 6, 7, **8** | 9, 10, 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 180 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 192 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 19 screenshots outstanding (`make shots`)
-- 16 `verifybox` blocks
+- 21 screenshots outstanding (`make shots`)
+- 18 `verifybox` blocks
 - **Appendix B's benchmark tables are still empty** — Chapter 7 specifies the
   experiment and deliberately reports no results. See item 7 below.
 
-Overfull hboxes: **40**. Chapters 5 and 6 added none (6 removed a pre-existing
-one); Chapter 7 added two, both in Appendix D's manifest and both under 6 pt,
-which is smaller than the entries already there. Check any new chapter the same
-way: build once with the chapter stubbed out, once with it in, and diff the
-`Overfull` lists. Attributing boxes by reading `main.log` nesting does not work.
+Overfull hboxes: **41**. Chapters 5 and 6 added none (6 removed a pre-existing
+one); Chapters 7 and 8 added three between them, all in Appendix D's manifest and
+all under 6 pt, which is smaller than the entries already there. Check any new
+chapter the same way: build once with the chapter stubbed out, once with it in,
+and diff the `Overfull` lists. Attributing boxes by reading `main.log` nesting
+does not work.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -319,6 +320,69 @@ event stream. Turn count comes from `ExecutorInvokedEvent`.
 
 ---
 
+## Observability API — RESOLVED (Chapter 8 pass, July 2026)
+
+Verified against `Microsoft.Agents.AI` (`AIAgentBuilder`, `OpenTelemetryAgent`,
+`OpenTelemetryConsts`, `Compaction/CompactionTelemetry`) and the
+`Observability/` folder of `Microsoft.Agents.AI.Workflows`.
+
+**Middleware is the decorator pattern, not a bespoke abstraction.**
+`AIAgentBuilder` + `DelegatingAIAgent`; `.Use(...)` overloads build an internal
+`AnonymousDelegatingAIAgent`. In-box decorators: `UseOpenTelemetry`, `UseLogging`,
+`UseAIContextProviders`, and the function-invocation `Use` overload.
+
+**Function-level middleware requires a `FunctionInvokingChatClient` in the
+pipeline** or the agent **throws at invoke time, not build time**. Documented in
+the extension's own remarks. Written up as a warning in §8.1.
+
+**Two activity source names, and both must be registered:**
+
+| Emitter | Source name |
+|---|---|
+| Agents, chat clients, compaction | `Experimental.Microsoft.Agents.AI` |
+| Workflows | `Microsoft.Agents.AI.Workflows` |
+
+Register one and you get half a trace with no error. The `Experimental.` prefix is
+a stability warning — do not hard-code it in startup, and expect it to change.
+
+**Workflow spans:** `workflow.build`, `workflow.session`, `workflow_invoke`,
+`executor.process`, `edge_group.process`, `message.send`. Events: `build.started`
+/ `build.validation_completed` / `build.completed` / `build.error`, `session.*`,
+`workflow.*`.
+
+**The dropped-delivery query — this is the Chapter 5 §5.3 IOU, now paid.** Every
+delivery attempt emits an `edge_group.process` span tagged
+`edge_group.delivered` (bool) and `edge_group.delivery_status` (the string values
+from the Chapter 5 notes). Filter `delivered = false` and the silent drop is one
+query instead of an afternoon.
+
+**Executor spans are SIBLINGS, not nested.** The source says so and explains why:
+causality between executors is expressed with span **links**, because a superstep
+runs its executors independently and nesting would misrepresent a fan-out. Most
+viewers render links poorly, so the default view of a workflow trace hides the
+causality. This contradicted the stub's "trace waterfall" framing and §8.4 was
+written against the corrected model — **worth remembering for Chapter 12**, which
+ingests these traces.
+
+**Compaction telemetry (Chapter 4 §4.5's IOU, paid).** Activities
+`compaction.compact`, `compaction.provider.invoke`, `compaction.summarize`. Tags
+are the ones the Chapter 8 brief listed **plus** `compaction.compacted`,
+`compaction.before.groups`, `compaction.after.groups`. The pair worth alerting on
+is `triggered` vs `compacted`.
+
+**Sensitive data is off by default** on both `OpenTelemetryAgent.EnableSensitiveData`
+and `WorkflowTelemetryOptions.EnableSensitiveData`. The workflow options also carry
+`DisableWorkflowBuild` / `DisableWorkflowRun` / `DisableExecutorProcess` /
+`DisableEdgeGroupProcess` / `DisableMessageSend` for volume control — but disabling
+edge spans disables the dropped-delivery query above.
+
+**DevUI:** `builder.AddDevUI()` + `app.MapDevUI()`. **Loopback-only by default**,
+with `DevUIOptions.AllowRemoteAccess`, a bearer token via options or the
+`DEVUI_AUTH_TOKEN` environment variable, and a startup warning if insecurely
+exposed.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -377,39 +441,6 @@ stated as fact. Chapter 7 labels all of its as judgement; keep that discipline.
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
 
-### Chapter 8 — Middleware and Observability
-**Angle:** the framework tells you what happened, not whether it was any good.
-That gap is the thesis of the capstone.
-
-**Already verified:** `OpenTelemetryAgent` as an automatic tracing decorator;
-OTel GenAI semantic conventions; `Microsoft.Agents.AI.DevUI`;
-`Aspire.Hosting.AgentFramework.DevUI`.
-
-**Owed from Chapter 4:** §4.5 promises this chapter wires up the compaction
-activity source. The attributes are real and already documented there —
-`compaction.strategy`, `compaction.triggered`, `compaction.before.tokens` /
-`after.tokens`, `.before.messages` / `.after.messages`, `compaction.duration_ms`,
-plus `compaction.groups_summarized` and `compaction.summary_length` on the
-summarisation path. Source: `Microsoft.Agents.AI/Compaction/CompactionTelemetry.cs`.
-
-**Owed from Chapter 5:** §5.3 tells the reader that a workflow producing no output
-is usually a silently dropped message, and that the way to find it is to look for
-edge spans whose delivery status is not `delivered`. It names this chapter. Cover
-the workflow activity source alongside the agent one, and show the actual span
-tree for a fan-out/fan-in run — `OpenTelemetryWorkflowBuilderExtensions` and
-`Observability/` in the Workflows package are the starting points.
-
-**Verify:** the three middleware levels (agent, function, chat client) and their
-registration; which spans and attributes are actually emitted.
-
-**Build:** custom middleware computing a per-turn quality score attached as a span
-attribute. Then the gap analysis: what MAF measures vs what it does not.
-
-**Screenshots:** Aspire dashboard trace waterfall for a multi-agent run; DevUI
-inspecting an agent. Both non-VS.
-
----
-
 ### Chapter 9 — Evaluation
 **Angle:** how you find out yesterday's prompt change made things worse.
 
@@ -428,6 +459,16 @@ There is a `Microsoft.Agents.AI.Workflows/Evaluation/` folder as well as the cor
 package one — check both. Note also that §7.7's "report distributions, not best
 runs" discipline is the same problem as evaluation flakiness, one chapter early;
 the two sections should agree with each other.
+
+**Owed from Chapter 8:** §8.6 is the gap statement this chapter closes — the
+framework instruments mechanism (tokens, latency, which executor ran) and not
+quality, so "a green dashboard is compatible with an agent failing every user".
+§8.7 builds the cheap first version: a scorer in agent middleware writing
+`quality.score` / `quality.scorer` / `quality.refused` as span tags. This chapter
+should pick that up and say plainly where the span-tag approach stops being
+enough. §8.7 also splits scorers into cheap non-model ones (refusal detection,
+truncation, tool-result citation, loop-cap hits) and expensive model-graded ones,
+and recommends the latter out of band on a sample — keep that line consistent.
 
 ---
 
@@ -485,6 +526,14 @@ avoided.
 No new API surface. One system using everything prior: ingest MAF GenAI traces,
 score workflow-run quality, compare orchestration topologies empirically, surface
 wasted turns. End with what v1 deliberately leaves out.
+
+**Owed from Chapter 8:** the trace-ingest half of the capstone depends on two
+things §8.4 established. Traces arrive under **two** activity source names, so
+the ingest must subscribe to both. And **executor spans are siblings joined by
+span links, not nested children** — so reconstructing a workflow run from a trace
+means walking links, not the parent-child tree. Any ingest written against the
+usual nesting assumption will produce a flat, causally meaningless view. §8.6's
+instrumented-vs-not table is the natural spec for what the capstone has to add.
 
 ---
 
