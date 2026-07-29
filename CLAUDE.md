@@ -10,21 +10,22 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, **5** | 6, 7, 8, 9, 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, 5, **6** | 7, 8, 9, 10, 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 149 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 167 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 15 screenshots outstanding (`make shots`)
-- 12 `verifybox` blocks
+- 17 screenshots outstanding (`make shots`)
+- 15 `verifybox` blocks
 
-Chapter 5 added zero overfull hboxes — the book's total is unchanged at 39. Check
-any new chapter the same way: build once with the chapter stubbed out, once with
-it in, and diff the `Overfull` lists. Attributing boxes by reading `main.log`
-nesting does not work.
+Chapters 5 and 6 each added zero overfull hboxes, and Chapter 6's pass also
+removed a pre-existing one (its own stub's over-long section heading), so the
+book's total is **38**, down from 39. Check any new chapter the same way: build
+once with the chapter stubbed out, once with it in, and diff the `Overfull`
+lists. Attributing boxes by reading `main.log` nesting does not work.
 
 ---
 
@@ -192,6 +193,71 @@ is the checkpoint point — which is the setup Chapter 6 pays off.
 
 ---
 
+## Durability API — RESOLVED (Chapter 6 pass, July 2026)
+
+Verified against `Microsoft.Agents.AI.Workflows/Checkpointing/`,
+`Microsoft.Agents.AI.Workflows.Declarative/`, and the `Checkpoint/`,
+`HumanInTheLoop/` and `Declarative/` sample folders at `main`. **Two of the
+Chapter 6 brief's assumptions were wrong** — see item 5 above for the checkpoint
+type names, and below for the declarative format.
+
+**Checkpointing is automatic once a manager is passed.** `RunStreamingAsync(workflow,
+input, checkpointManager)` — one checkpoint per superstep, collected from
+`SuperStepCompletedEvent.CompletionInfo.Checkpoint`. `CheckpointInfo` is just
+`(SessionId, CheckpointId)`, so it is cheap to persist and hand to another process.
+
+**Restore ≠ rehydrate.** `run.RestoreCheckpointAsync(info)` rewinds an existing
+run in place; `InProcessExecution.ResumeStreamingAsync(freshWorkflow, info, manager)`
+continues on a newly built graph in a process that never saw the original. Only
+the second is durability. It requires graph construction to be a repeatable pure
+function — which is why every upstream sample has a `WorkflowFactory.BuildWorkflow()`.
+
+**What a checkpoint holds** (internal `Checkpoint` class): step number,
+`WorkflowInfo`, `RunnerStateData`, scoped `StateData`, `EdgeStateData`, and a
+`Parent` pointer. Executor instance fields are *not* in it. Checkpoints form a
+**tree**, not a list — the parent pointer plus parent-filtered index means you can
+replay from one point twice and keep both branches.
+
+**Custom stores have an ordering contract.** `ICheckpointStore<T>.RetrieveIndexAsync`
+must return oldest-first; `CheckpointManager` takes the last element as the latest.
+An unordered store resumes the wrong checkpoint silently. Documented in the
+interface's own remarks. Worth a test.
+
+**AOT:** `CheckpointManager.CreateJson(store, options)` — the options argument is
+what makes it work under disabled reflection. Sample: `Declarative/AotCheckpointing`.
+
+**HITL:** `RequestPort.Create<TReq,TResp>(id)`; the port is an `ExecutorBinding`
+like anything else. Emits `RequestInfoEvent` → `ExternalRequest`; answer with
+`run.SendResponseAsync(request.CreateResponse(decision))`. Build the response
+*from the request* — it carries the request id used to match concurrent asks.
+**One interaction = two supersteps = two checkpoints**, and the checkpoint after
+the request is a complete description of a workflow waiting for a person.
+
+**Declarative workflows are NOT the builder graph in YAML.** This is the brief's
+biggest error. The format is `kind: Workflow` + a trigger + a list of *actions*,
+with `ConditionGroup`/`GotoAction` control flow and Power Fx expressions
+(`=System.LastMessage.Text`, `Local.Foo`) — i.e. Copilot Studio's conversational
+authoring model, compiled onto the same runtime via
+`DeclarativeWorkflowBuilder.Build<TInput>(path, options)`. Action kinds seen in
+samples: `SetVariable`, `SetTextVariable`, `ConditionGroup`, `GotoAction`,
+`EndWorkflow`, `Question`, `SendActivity`, `SendMessage`, `CreateConversation`,
+`RequestExternalInput`, `InvokeAzureAgent`, `InvokeMcpTool`, `InvokeFunctionTool`,
+`HttpRequestAction`. `DeclarativeWorkflowOptions` carries `IMcpToolHandler` and
+`IHttpRequestHandler` — the sandboxing seam.
+
+**`StatefulExecutor<TState>` exists** and is the right answer to instance-field
+state; it wraps read/cache/queued-write across checkpoints. Prefer it to raw
+`OnCheckpointingAsync` / `OnCheckpointRestoredAsync`, which must be implemented as
+a matched pair. `IResettableExecutor` is about *reuse* of shared instances, not
+durability — do not conflate them.
+
+**Nice upstream contrast to reuse:** `HumanInTheLoop/HumanInTheLoopBasic` and
+`Checkpoint/CheckpointWithHumanInTheLoop` contain the same `JudgeExecutor` with the
+same `_tries` counter, and only the checkpointed one has the hooks. Chapter 6 §6.2
+uses this; Chapter 9 could use it as an evaluation-regression example.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -204,13 +270,19 @@ Deliberately **not** bumped during the Chapter 4 pass, because changing `\mafcor
 invalidates Appendix A's whole table plus Chapter 1's timeline, and that is a
 sweep of its own. Do it as a dedicated pass, not as a side effect of a chapter.
 
-**5. `CheckpointStore` is actually `ICheckpointStore`.** Appendix A's note (and
-the original Chapter 4 brief) name the two storage abstractions as
-`ChatHistoryProvider` and `CheckpointStore`. The first is exact; the second is an
-interface, `ICheckpointStore`, with `JsonCheckpointStore` and
-`FileSystemJsonCheckpointStore` as in-box implementations. Chapter 4 §4.1 uses
-`ICheckpointStore`. Confirm the full surface when writing Chapter 6 and fix
-Appendix A then.
+**5. `CheckpointStore` — RESOLVED in the Chapter 6 pass, and the Chapter 4 note
+was itself half wrong.** It is `ICheckpointStore<TStoreObject>`, **generic**, not
+`ICheckpointStore`. Corrections to what was previously written here:
+
+- `JsonCheckpointStore` is an **abstract base class** (`ICheckpointStore<JsonElement>`),
+  not a usable in-box store. `FileSystemJsonCheckpointStore` is the only concrete
+  in-box implementation.
+- `ICheckpointManager` and `InMemoryCheckpointManager` are **`internal`**. Do not
+  name them to a reader. The public surface is the sealed `CheckpointManager`
+  with `CreateInMemory()`, `CreateJson(store, options?)` and `Default`.
+
+Chapter 6 §6.1 is written against the corrected surface. **Appendix A still needs
+fixing** — fold this into the version-bump pass (item 4).
 
 **6. New packages not in Appendix A.** `Microsoft.Agents.AI.Mem0`,
 `Microsoft.Agents.AI.Valkey`, `Microsoft.Agents.AI.Mcp`,
@@ -226,36 +298,6 @@ Fold in during the version-bump pass (item 4).
 
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
-
-### Chapter 6 — Workflows: Durability and Control
-**Angle:** kill a running workflow and have it finish correctly anyway.
-
-**Already verified:** HITL emits `RequestInfoEvent` carrying
-`ToolApprovalRequestContent`; resume via
-`run.SendResponseAsync(e.Request.CreateResponse(...))`;
-`Microsoft.Agents.AI.Workflows.Declarative` stable on the core train.
-Checkpointing lives in `Microsoft.Agents.AI.Workflows/Checkpointing/` — start
-from `ICheckpointStore`, `JsonCheckpointStore`, `FileSystemJsonCheckpointStore`,
-`ICheckpointManager`, `InMemoryCheckpointManager`.
-
-**Verify:** checkpoint API and store configuration; what is captured and what is
-not; YAML schema for declarative workflows.
-
-**Write the gotcha:** resume producing a different result than an uninterrupted
-run means state lives outside the checkpoint — a static field, a cached client,
-an external store. Executors must take dependencies explicitly. Chapter 4 §4.1
-sets this up as a taxonomy error and points forward here; pay it off.
-
-**Owed from Chapter 5:** §5.1 establishes the superstep as the unit of durability
-and states that resume happens *at a superstep boundary, not mid-executor* —
-hence executors must be re-runnable. §5.2 has a warning that instance-field state
-is not captured unless the executor overrides `OnCheckpointingAsync`. Both are
-promises this chapter has to make good on. The lifecycle hooks to cover are
-`InitializeAsync`, `OnMessageDeliveryStartingAsync`,
-`OnMessageDeliveryFinishedAsync`, `OnCheckpointingAsync`,
-`OnCheckpointRestoredAsync`, plus `IResettableExecutor`.
-
----
 
 ### Chapter 7 — Multi-Agent Orchestration
 **Angle:** the four patterns are conveniences over the workflow graph. Knowing
@@ -339,6 +381,14 @@ VM-isolated sandboxes.
 
 **Make the distinction explicit:** durable extension = durability of the *host*;
 workflow checkpointing = durability of the *graph*. Different problems.
+
+**Owed from Chapter 6:** §6.2 exercise 4 sends the reader here for the cold-start
+number and says rehydration cost must be measured separately before the hosting
+claim can be judged. Chapter 6 also notes that pointing the file-system checkpoint
+store at a mounted volume is what makes a run survive the container — the
+scale-to-zero story has to be consistent with that. There is also
+`WorkflowHostingExtensions.AsAIAgent(Workflow, ...)`: a workflow can be hosted as
+an agent, which is the natural bridge from Chapter 6 into this chapter.
 
 **Build:** Aspire AppHost (agent + Postgres + OTLP collector + Blazor); a .NET
 agent delegating to a Python agent over A2A — few people will have built this and

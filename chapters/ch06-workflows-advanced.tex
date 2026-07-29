@@ -5,24 +5,739 @@
 Killing a running workflow and having it finish correctly anyway.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+Chapter~\ref{ch:workflows-basics} built graphs that run to completion in one
+process, in one go. This chapter is about the far more common case: the run takes
+long enough that something interrupts it. A deployment restarts the host. A model
+call times out. A person has to approve something and goes to lunch.
+
+The test this chapter sets is deliberately harsh, and it is the one worth
+applying to any durable-execution claim: \emph{kill the process half way through
+and have the run finish with the same answer it would have produced
+uninterrupted}. Not \emph{an} answer --- the \emph{same} answer. Most workflow
+code passes the first test and fails the second, and the failure is silent.
+
+\begin{verifybox}
+The listings here were derived from the source of
+\pkg{Microsoft.Agents.AI.Workflows} --- the \code{Checkpointing/} folder in
+particular --- and from the checkpoint, human-in-the-loop and declarative samples
+in the upstream repository. Type and member names are reliable. The composite
+example in \S\ref{sec:dur-pipeline} has not been compiled by the author. The
+minimal API in \S\ref{sec:dur-hitl} is the author's own code and is the least
+verified thing in the chapter.
+\end{verifybox}
+
+% ============================================================
 \section{Checkpointing}
+\label{sec:dur-checkpointing}
+\index{workflow!checkpointing}
+
+Chapter~\ref{ch:workflows-basics} established the superstep as the unit of
+execution. It is also the unit of durability, and that is not a coincidence ---
+it is the whole design. At a superstep boundary the runtime knows exactly three
+things: which messages are pending, what the shared state is, and which step
+number it is on. Nothing is half-done, because executors either completed within
+the step or did not run in it.
+
+That is what makes a checkpoint possible at all, and it is why the framework
+takes checkpoints where it does.
+
+\subsection{Turning it on}
+
+There is no configuration ceremony. You pass a checkpoint manager to the run, and
+checkpointing happens:
+
+\begin{csharp}[caption={A checkpointed run}, label={lst:dur-enable}]
+CheckpointManager checkpointManager = CheckpointManager.Default;
+
+await using StreamingRun run = await InProcessExecution.RunStreamingAsync(
+    workflow, input, checkpointManager);
+\end{csharp}
+
+Checkpoints are created automatically at the end of every superstep. You collect
+them from the superstep completion event, whose payload carries the checkpoint
+identifier when one was taken:
+
+\begin{csharp}[caption={Collecting checkpoint identifiers}, label={lst:dur-collect}]
+List<CheckpointInfo> checkpoints = [];
+
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
+{
+    if (evt is SuperStepCompletedEvent step)
+    {
+        CheckpointInfo? checkpoint = step.CompletionInfo?.Checkpoint;
+        if (checkpoint is not null)
+        {
+            checkpoints.Add(checkpoint);
+        }
+    }
+}
+\end{csharp}
+
+A \api{CheckpointInfo} is a pair of strings --- a session identifier and a
+checkpoint identifier --- and nothing else. It is a handle, not the data. That
+matters: it is cheap to keep, cheap to log, and safe to hand to another process,
+which is exactly what \S\ref{sec:dur-resume} does with it.
+
+\begin{note}
+\code{CheckpointManager.Default} is in-memory, and it is shared. It is right for
+a first experiment and wrong for anything else --- an in-memory checkpoint store
+does not survive the process restart that is the entire point of checkpointing.
+Reach for it while you are learning the shape, then replace it before you draw
+any conclusions about durability.
+\end{note}
+
 \subsection{What is captured, and what is not}
+\label{sec:dur-captured}
+
+A checkpoint holds six things: the step number, the workflow's structural
+description, the runner's internal state, the shared state data keyed by scope,
+the per-edge state, and a pointer to its parent checkpoint.
+
+Read that list again for what is missing. \textbf{Your executors' fields are not
+in it.} The runtime serialises state it owns --- what went through the context
+--- and it has no way to know about a private field on a class you wrote.
+
+\begin{warning}
+\index{workflow!state loss on resume}
+This is the failure the book has been pointing at since Chapter~\ref{ch:memory}.
+An executor that counts its invocations in an \code{int} field, caches a client,
+or memoises a lookup will resume with that field at its \emph{constructed} value,
+not its value at checkpoint time. The run completes. No exception is thrown. The
+answer is different, and the difference is proportional to how much the executor
+depended on the field.
+
+The taxonomy error in \S\ref{sec:taxonomy} --- conversation state, agent memory
+and workflow state treated as one --- produces exactly this symptom, one layer
+down.
+\end{warning}
+
+Two things make it worse in practice. Instance-field state is invisible in the
+places you would look: it does not appear in the checkpoint JSON, so inspecting a
+checkpoint will not reveal what is absent from it. And the discrepancy is often
+small on the first resume and compounds over several, which means the bug
+presents as flakiness rather than as breakage.
+
+The rule is the one from Chapter~\ref{ch:workflows-basics}, stated in its
+durable form: \textbf{if it matters after a restart, it goes through the
+context}. Anything else is a deliberate exception that you must handle yourself,
+which is what \S\ref{sec:dur-hooks} is for.
+
 \subsection{Where checkpoints live}
+\label{sec:dur-stores}
 
+The storage abstraction is an interface generic in the stored representation,
+with an abstract JSON specialisation and one concrete in-box implementation:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Type} & \textbf{What it is} \\
+\midrule
+\code{ICheckpointStore<T>} & The contract. Retrieve an index, create a
+checkpoint, retrieve one \\[4pt]
+\code{JsonCheckpointStore} & Abstract base for JSON-shaped stores. Not usable
+directly \\[4pt]
+\code{FileSystemJsonCheckpointStore} & The concrete one. Writes JSON files to a
+directory \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Wire a store to a manager with the JSON factory:
+
+\begin{csharp}[caption={Checkpoints that survive the process}, label={lst:dur-filestore}]
+DirectoryInfo folder = Directory.CreateDirectory("./checkpoints");
+using FileSystemJsonCheckpointStore store = new(folder);
+
+CheckpointManager checkpointManager = CheckpointManager.CreateJson(store);
+\end{csharp}
+
+That is the first genuinely durable configuration in this book, and it is three
+lines. Point the directory at a mounted volume and the run survives the
+container.
+
+\begin{versionbox}
+Under trimming or ahead-of-time compilation, pass serializer options to
+\code{CreateJson} explicitly. The reflection-based default is what fails first
+when reflection is disabled, and the upstream AOT sample exists specifically to
+demonstrate that call. If checkpoint writes work in a debug build and fail in a
+published one, this is why.
+\end{versionbox}
+
+\begin{note}
+\textbf{Implementing your own store: the ordering contract is load-bearing.} The
+interface's documentation states that the index must come back ordered by commit
+time, oldest first, and that callers rely on the last element being the newest.
+A store that returns checkpoints unordered --- which is the natural behaviour of
+a naive SQL query without an \code{ORDER BY}, or of a blob listing --- will
+resume the wrong checkpoint. It will not throw. It will quietly resume from
+somewhere else in the run.
+
+If you write a database-backed store, that ordering guarantee is the thing to
+put a test around, before anything else.
+\end{note}
+
+\subsection{Checkpoints form a tree}
+
+Each checkpoint carries a pointer to its parent, and the index can be filtered by
+parent. Checkpoints are therefore a tree, not a list.
+
+This is more useful than it first appears. It means resuming from an earlier
+checkpoint and taking a different path does not destroy the original branch ---
+you can replay the same run from the same point twice, with different external
+inputs, and keep both. For an approval workflow that is an audit trail. For
+debugging a non-deterministic agent step it is the closest thing to a rewind
+button that exists in this space.
+
+% ============================================================
 \section{Resume}
-% Kill the process mid-run; resume to correct completion; prove it with a log
+\label{sec:dur-resume}
+\index{workflow!resume}
 
+There are two distinct operations here and the samples name them differently for
+good reason. Conflating them is the most common source of confusion in this area.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Operation} & \textbf{What it does} \\
+\midrule
+Restore & Rewinds an \emph{existing} run to an earlier checkpoint, in the same
+process, on the same instance \\[4pt]
+Rehydrate & Continues a checkpoint on a \emph{freshly built} workflow, in a
+process that need never have seen the original run \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Restore is a rewind:
+
+\begin{csharp}[caption={Rewinding a live run}, label={lst:dur-restore}]
+await run.RestoreCheckpointAsync(checkpoints[5], CancellationToken.None);
+
+// The same run handle now continues from step 5.
+await foreach (WorkflowEvent evt in run.WatchStreamAsync()) { /* ... */ }
+\end{csharp}
+
+Rehydrate is the one that matters for durability, because it is the one that
+works after the original process is gone:
+
+\begin{csharp}[caption={Continuing in a new process}, label={lst:dur-rehydrate}]
+// A new workflow instance, built exactly as the original was.
+Workflow workflow = WorkflowFactory.BuildWorkflow();
+
+await using StreamingRun resumed = await InProcessExecution.ResumeStreamingAsync(
+    workflow, savedCheckpoint, checkpointManager);
+\end{csharp}
+
+Note what rehydration requires: the workflow must be rebuilt with the same
+shape. The checkpoint carries the graph's structural description and the state,
+but not your executor implementations. \textbf{Building the graph must therefore
+be a pure function you can call twice} --- which is an argument for a
+\code{BuildWorkflow()} factory method rather than a graph assembled inline in
+\code{Main}, and it is why the upstream samples are all written that way.
+
+\begin{warning}
+Change the graph between checkpoint and resume --- rename an executor, add a node
+--- and you are resuming state into a shape it was not captured from. Treat the
+graph's structure as part of your deployment compatibility surface. If workflows
+can be in flight across a deploy, either drain them first or version the graph.
+\end{warning}
+
+\subsection{Proving it, rather than asserting it}
+\label{sec:dur-proving}
+
+The claim ``our workflow is durable'' is worth exactly as much as the experiment
+behind it, so run the experiment. The procedure:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Run the workflow to completion with a file-backed store. Record the output
+      and the checkpoint count.
+\item Run it again and kill the process --- \code{SIGKILL}, not a graceful
+      shutdown --- part way through. A graceful shutdown proves nothing, because
+      it gives your code a chance to do things a crash would not.
+\item In a new process, rehydrate from the last checkpoint and run to completion.
+\item Compare the outputs. \emph{Character for character.}
+\end{enumerate}
+
+Step four is the one people skip, and it is the only one that tests anything. A
+run that completes after resume has demonstrated that resume does not crash. A
+run that completes \emph{with the same answer} has demonstrated durability.
+
+\begin{note}
+Make the comparison automatic and put it in CI. A durability test that a human
+has to eyeball is a durability test that stops being run in about three weeks,
+which is roughly when the first executor acquires a private field.
+\end{note}
+
+\needscreenshot{workflow-checkpoint-folder}{What durability actually looks like on
+disk}{A file explorer or terminal listing of a checkpoint directory written by
+the file-system store, showing several checkpoint JSON files, alongside one of
+those files open in an editor with the state data visible and legible. The point
+is that a checkpoint is inspectable; make sure the scoped state keys can be read.
+No IDE chrome beyond the editor pane.}
+
+\subsection{Executor lifecycle hooks}
+\label{sec:dur-hooks}
+\index{Executor@\texttt{Executor}!lifecycle hooks}
+
+When you genuinely need instance state --- and sometimes you do --- the executor
+base class gives you the two hooks that make it survive. There are five hooks in
+total:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Hook} & \textbf{Called} \\
+\midrule
+\code{InitializeAsync} & Once, when the executor is first instantiated \\
+\code{OnMessageDeliveryStartingAsync} & Before a batch of messages is delivered \\
+\code{OnMessageDeliveryFinishedAsync} & After the batch completes \\
+\code{OnCheckpointingAsync} & When a checkpoint is being taken \\
+\code{OnCheckpointRestoredAsync} & After state has been restored \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+The last two are a matched pair, and they must be implemented together. Writing
+one without the other is worse than writing neither, because it produces state
+that is saved and never restored --- or restored and never saved.
+
+\begin{csharp}[caption={Making a field durable}, label={lst:dur-hooks}]
+internal sealed class JudgeExecutor() : Executor<int>("Judge")
+{
+    private const string StateKey = "JudgeExecutorState";
+    private int _tries;
+
+    public override async ValueTask HandleAsync(
+        int message, IWorkflowContext context, CancellationToken cancellationToken = default)
+    {
+        this._tries++;
+        // ...
+    }
+
+    protected override ValueTask OnCheckpointingAsync(
+        IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        context.QueueStateUpdateAsync(StateKey, this._tries, cancellationToken: cancellationToken);
+
+    protected override async ValueTask OnCheckpointRestoredAsync(
+        IWorkflowContext context, CancellationToken cancellationToken = default) =>
+        this._tries = await context.ReadStateAsync<int>(StateKey, cancellationToken: cancellationToken);
+}
+\end{csharp}
+
+That listing is worth comparing against its own upstream sibling. The
+human-in-the-loop sample and the checkpointed human-in-the-loop sample contain
+the same executor, with the same counter --- and only the checkpointed one has
+these two overrides. The non-checkpointed version is not wrong, because nothing
+resumes it. Copy it into a workflow that does resume and it becomes a bug, with
+no compiler diagnostic and no runtime error to tell you.
+
+\begin{note}
+\textbf{There is a base class that does this for you.} \api{StatefulExecutor} is
+generic in a state type and handles the read, the cache and the queued write,
+including across checkpoints. Prefer it to hand-rolled hooks: it removes the
+opportunity to implement one half of the pair. Reach for the raw hooks when the
+state does not fit a single serialisable type, or when you need to do something
+at checkpoint time beyond persisting a value.
+\end{note}
+
+There is also \api{IResettableExecutor}, which is a different concern despite
+looking adjacent: it returns a shared executor instance to a clean state so that
+a workflow holding shared instances can be run again after disposal. It is about
+reuse, not durability. Implement it if you share executor instances across runs.
+
+% ============================================================
 \section{Human-in-the-loop ports}
-% Pause, emit a request, wait for an out-of-band decision, resume hours later
-% Expose the decision over a minimal API
+\label{sec:dur-hitl}
+\index{workflow!human in the loop}
 
+A request port is a node that represents the outside world. It has a request type
+and a response type, it is created by a static factory, and --- because of the
+implicit conversions from Chapter~\ref{ch:workflows-basics} --- it is wired into
+the graph like any other node:
+
+\begin{csharp}[caption={A port is a node}, label={lst:dur-port}]
+RequestPort approval = RequestPort.Create<ApprovalRequest, ApprovalDecision>("Approve");
+
+Workflow workflow = new WorkflowBuilder(ingest)
+    .AddEdge(validate, approval)
+    .AddEdge(approval, persist)
+    .WithOutputFrom(persist)
+    .Build();
+\end{csharp}
+
+When execution reaches the port, the run emits a \api{RequestInfoEvent} carrying
+an \api{ExternalRequest}, and stops making progress on that path. You answer it
+by creating a response from the request and sending it back:
+
+\begin{csharp}[caption={Answering a request}, label={lst:dur-respond}]
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
+{
+    if (evt is RequestInfoEvent requested)
+    {
+        ExternalRequest request = requested.Request;
+
+        if (request.TryGetDataAs<ApprovalRequest>(out ApprovalRequest? pending))
+        {
+            ApprovalDecision decision = await AskSomeoneAsync(pending);
+            await run.SendResponseAsync(request.CreateResponse(decision));
+        }
+    }
+}
+\end{csharp}
+
+Creating the response \emph{from the request} rather than constructing one is not
+a stylistic preference. The response carries the request identifier and port
+information, which is how the runtime matches an answer to the question when
+several are outstanding at once.
+
+\subsection{Two supersteps, two checkpoints}
+
+A request-and-response cycle costs two supersteps: one in which the port emits
+the request, and one in which the response arrives. With checkpointing on, that
+means two checkpoints per human interaction.
+
+This is the detail that makes durable approval workflows actually work. The
+checkpoint taken after the request was emitted is a complete, resumable
+description of a workflow that is \emph{waiting for a person}. The process can
+exit. The container can be recycled. Days can pass. When the decision arrives,
+a new process rehydrates from that checkpoint and delivers the response.
+
+\begin{note}
+Notice what this makes unnecessary: no polling loop, no held connection, no
+background thread parked on a \code{TaskCompletionSource}, no in-memory
+dictionary of pending approvals that a restart would lose. The pending state is
+a checkpoint identifier in a database, and the resume is a function of it.
+
+This is the strongest single argument for workflows over an orchestration loop
+you write yourself, and it is worth building once to feel it.
+\end{note}
+
+\subsection{Exposing the decision over HTTP}
+
+The shape that follows is: when a request is emitted, persist the checkpoint
+identifier and the pending request somewhere durable, and return. When a decision
+arrives on an endpoint, load the checkpoint, rehydrate, and send the response.
+
+\begin{csharp}[caption={The approval endpoint}, label={lst:dur-endpoint}]
+app.MapPost("/approvals/{id}", async (
+    string id,
+    ApprovalDecision decision,
+    IPendingApprovalStore pending,
+    CheckpointManager checkpoints) =>
+{
+    PendingApproval? item = await pending.GetAsync(id);
+    if (item is null)
+    {
+        return Results.NotFound();
+    }
+
+    // Rebuild the graph and continue from where it stopped.
+    await using StreamingRun run = await InProcessExecution.ResumeStreamingAsync(
+        WorkflowFactory.BuildWorkflow(), item.Checkpoint, checkpoints);
+
+    await run.SendResponseAsync(item.Request.CreateResponse(decision));
+    await run.RunToCompletionAsync();
+
+    await pending.CompleteAsync(id);
+    return Results.Accepted();
+});
+\end{csharp}
+
+\begin{verifybox}
+The endpoint above is the author's own composition rather than a transcription of
+an upstream sample. The individual calls are verified; the arrangement --- in
+particular resuming and responding within a single request, rather than resuming
+and then handing the run to a background worker --- has not been compiled or load
+tested. For anything beyond a demonstration, do the completion out of band: a
+model call inside an HTTP handler is a request timeout waiting to happen.
+\end{verifybox}
+
+\begin{warning}
+The approval decision arrives over the network, which means it is untrusted
+input. Two things follow, and neither is the framework's job. Authorise the
+decision --- a request identifier is not a capability, and anyone who can guess
+one must not thereby be able to approve. And make the endpoint idempotent: a
+retried POST must not resume the same checkpoint twice and produce two
+completions.
+\end{warning}
+
+% ============================================================
 \section{Declarative workflows}
-\subsection{The same graph in YAML}
+\label{sec:dur-declarative}
+\index{workflow!declarative}
+
+\subsection{Not the same graph in YAML}
+
+It is natural to assume that the declarative format is a serialisation of the
+graphs Chapter~\ref{ch:workflows-basics} built --- executors and edges, rendered
+as YAML. It is not, and starting from that assumption will cost you an afternoon.
+
+The declarative format is a different model. A workflow file declares a trigger
+and a list of actions, with control flow expressed as condition groups and
+explicit jumps, and data flow expressed through variables written in a
+spreadsheet-style expression language:
+
+\begin{yamlcode}[caption={The declarative shape}, label={lst:dur-yaml}]
+kind: Workflow
+trigger:
+  kind: OnConversationStart
+  id: workflow_demo
+  actions:
+
+    - kind: SetVariable
+      id: set_original
+      variable: Local.OriginalInput
+      value: =System.LastMessage.Text
+
+    - kind: Question
+      id: question_confirm
+      property: Local.ConfirmedInput
+      prompt:
+        kind: Message
+        text:
+          - "CONFIRM:"
+
+    - kind: ConditionGroup
+      id: check_completion
+      conditions:
+        - condition: =Local.OriginalInput <> Local.ConfirmedInput
+          id: check_confirm
+          actions:
+            - kind: GotoAction
+              id: goto_again
+              actionId: question_confirm
+\end{yamlcode}
+
+That is not a graph description. It is an imperative script with labelled jumps
+--- closer to a dialogue definition than to the builder API. The available action
+kinds confirm the lineage:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Group} & \textbf{Action kinds} \\
+\midrule
+Control and data & \code{SetVariable}, \code{SetTextVariable},
+\code{ConditionGroup}, \code{GotoAction}, \code{EndWorkflow} \\[4pt]
+Conversation & \code{Question}, \code{SendActivity}, \code{SendMessage},
+\code{CreateConversation}, \code{RequestExternalInput} \\[4pt]
+Invocation & \code{InvokeAzureAgent}, \code{InvokeMcpTool},
+\code{InvokeFunctionTool}, \code{HttpRequestAction} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+A YAML file is compiled to a \api{Workflow} by a static builder, so the result
+runs on the same runtime and checkpoints the same way:
+
+\begin{csharp}[caption={Compiling YAML to a workflow}, label={lst:dur-declarative-build}]
+Workflow workflow = DeclarativeWorkflowBuilder.Build<string>(
+    "ConfirmInput.yaml",
+    new DeclarativeWorkflowOptions(agentProvider)
+    {
+        ConversationId = conversationId
+    });
+\end{csharp}
+
+The options object is where the host's capabilities are supplied: an agent
+provider, and optional handlers for MCP tools and HTTP requests. Those handler
+hooks are the useful part --- they are how you stop a declarative workflow making
+arbitrary outbound calls, by supplying an implementation that enforces an
+allow-list.
+
 \subsection{When declarative wins, and when it does not}
+
+The honest summary is that this is a different product surface that happens to
+share a runtime, and it should be chosen on that basis rather than on the general
+appeal of configuration over code.
+
+\textbf{It wins} when the people changing the workflow are not the people who
+can deploy the application; when the workflow must be authored or reviewed in a
+tool rather than in a pull request; when you are already in the Power Platform or
+Copilot Studio world and this is the format that ecosystem speaks; and when the
+actions you need are ones the format already has.
+
+\textbf{It does not win} when the logic is genuinely complex --- condition groups
+and jumps are a worse language for that than C\# is, and the expression language
+will run out before your requirements do; when you need a type the format has no
+concept of; when you want the compile-time route diagnostics from
+Chapter~\ref{ch:workflows-basics} \S\ref{sec:wf-generators}, which do not apply
+here because there are no handler signatures to analyse; or when you would end
+up generating the YAML from code, which is a sign the abstraction is inverted.
+
+\begin{note}
+The trap is the middle case: a workflow that is declarative ``so the business can
+change it'' and is in practice only ever edited by the same two engineers who
+maintain the rest of the application. That configuration buys nothing and costs a
+language, a debugger and a test framework. Ask who will edit the file, by name.
+If the answer is the team that wrote it, write it in C\#.
+\end{note}
+
 \subsection{The Copilot Studio adjacency}
 
-\section{Worked example: document pipeline with approval gate}
-% ingest -> classify -> route -> validate -> HITL on low confidence -> persist
+The lineage is not hidden and is worth stating plainly: the trigger-and-actions
+model, the \code{Local.} and \code{System.} variable scopes, the expression
+syntax and the \code{Question} action are Copilot Studio's conversational
+authoring model. There is a real strategic point here --- the same workflow
+definition can be authored in a low-code tool and executed by a .NET host you
+control, which is a genuinely useful seam for organisations that have both.
 
+The practical consequence for a .NET engineer is a division of labour. The
+declarative layer is good at conversation shape and orchestration of
+already-existing capabilities. It is not where your domain logic should live.
+Expose the domain logic as tools and agents, keep the interesting code in C\#
+where it can be tested, and let the YAML sequence it.
+
+% ============================================================
+\section{Worked example: an approval gate}
+\label{sec:dur-pipeline}
+
+This extends Chapter~\ref{ch:workflows-basics} \S\ref{sec:wf-pipeline} rather
+than replacing it. The graph gains a validation step and an approval port on the
+low-confidence path:
+
+\begin{center}
+\small
+\code{ingest} $\rightarrow$ \code{classify} $\rightarrow$ \code{route}
+$\rightarrow$ \code{validate} $\rightarrow$ [\code{approve}] $\rightarrow$
+\code{persist}
+\end{center}
+
+\noindent
+The approval port sits on a conditional edge, so it is only reached when the
+classifier's confidence is below a threshold. High-confidence documents go
+straight to persistence and never involve a person --- which is the design goal,
+and also the reason the durability has to work: the interesting runs are the rare
+ones.
+
+\begin{verifybox}
+Assembled from patterns verified individually against upstream samples. The
+composite has not been compiled or run by the author.
+\end{verifybox}
+
+\begin{csharp}[caption={The gated pipeline}, label={lst:dur-pipeline}]
+internal static class WorkflowFactory
+{
+    // Must be callable twice and produce the same shape: resume depends on it.
+    internal static Workflow BuildWorkflow()
+    {
+        RequestPort approve =
+            RequestPort.Create<ApprovalRequest, ApprovalDecision>("Approve");
+
+        IngestExecutor   ingest   = new();
+        ClassifyExecutor classify = new();
+        ValidateExecutor validate = new();
+        PersistExecutor  persist  = new();
+
+        return new WorkflowBuilder(ingest)
+            .AddChain(ingest, [classify, validate])
+            .AddEdge<Validated>(validate, persist,
+                condition: v => v?.Confidence >= ConfidenceThreshold)
+            .AddEdge<Validated>(validate, approve,
+                condition: v => v?.Confidence < ConfidenceThreshold)
+            .AddEdge(approve, persist)
+            .WithOutputFrom(persist)
+            .WithName("document-pipeline-gated")
+            .Build();
+    }
+}
+\end{csharp}
+
+Build it as a ladder again, and note that rungs two and four are the ones that
+teach something:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Add the approval port and answer it inline from the console. Confirm the
+      graph pauses and resumes.
+\item Turn on the file-system store. Kill the process while it waits for
+      approval. Rehydrate in a new process and approve there. This is the whole
+      chapter in one rung.
+\item Move the decision to a minimal API endpoint, and approve with an HTTP
+      client hours later.
+\item Give an executor a private counter, resume, and watch the output change.
+      Then fix it with the hooks from \S\ref{sec:dur-hooks} and watch it stop
+      changing. Do this deliberately; it is the failure you will otherwise meet
+      in production.
+\end{enumerate}
+
+\needscreenshot{workflow-approval-resume}{An approval delivered to a process that
+did not start the run}{Two terminals side by side. The left one shows the
+workflow running, emitting an approval request, and then being killed. The right
+one shows a second process rehydrating from the checkpoint, receiving the
+approval decision over HTTP, and completing with the final output. The checkpoint
+identifier must be visible in both panes so the reader can see it is the same
+run.}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:orchestration}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Run the durability experiment in \S\ref{sec:dur-proving} properly ---
+      \code{SIGKILL}, new process, byte-for-byte output comparison. Record
+      whether it passed on the first attempt. Most do not.
+\item Introduce the private-field bug deliberately and measure how far the
+      resumed answer drifts. Then fix it twice: once with the raw hooks, once
+      with \api{StatefulExecutor}. Keep the one you would rather maintain.
+\item Implement a checkpoint store over a database. Write the ordering test
+      from \S\ref{sec:dur-stores} first, and make it fail before you make it
+      pass.
+\item Time a resume. Chapter~\ref{ch:hosting} claims durable hosting has a
+      cold-start cost; you cannot judge that number without knowing what
+      rehydration costs on its own.
+\item Rewrite the approval gate as a declarative workflow. Stop when it becomes
+      annoying rather than pushing through, and write down where that was ---
+      the boundary you find is the answer to \S\ref{sec:dur-declarative} for
+      your problem, not for the general case.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+The superstep boundary is the unit of durability because it is the only point at
+which nothing is half-done. Passing a checkpoint manager to a run is all it takes
+to get a checkpoint at every boundary, and a \api{CheckpointInfo} is a cheap
+handle you can persist and hand to another process.
+
+A checkpoint captures the step number, the graph's structural description, the
+runner state, the scoped state and the per-edge state. It does not capture your
+executors' fields. That single omission is the source of almost every
+resume-produces-a-different-answer bug, and the fix is either to route state
+through the context or to implement the checkpointing and restore hooks as a
+matched pair --- or, better, to derive from \api{StatefulExecutor} and remove the
+opportunity to implement only one of them.
+
+Restore rewinds a live run; rehydration continues a checkpoint on a freshly built
+graph in a process that never saw the original. Only the second is durability,
+and it requires that building the graph be a repeatable function --- which is why
+every upstream sample has a workflow factory.
+
+Prove durability rather than asserting it: kill the process ungracefully, resume
+in a new one, and compare the output character for character. A run that merely
+completes has proved nothing.
+
+Request ports make a pause a first-class thing. Each interaction costs two
+supersteps and therefore two checkpoints, and the checkpoint taken after the
+request is a complete description of a workflow waiting for a person --- which is
+what removes the polling loop, the held connection and the in-memory pending
+dictionary that a restart would lose.
+
+Declarative workflows are not the builder's graph in YAML. They are a
+trigger-and-actions model with a spreadsheet expression language, inherited from
+Copilot Studio, compiled onto the same runtime. Choose the format on who will
+edit the file, not on a general preference for configuration over code.
+
+Chapter~\ref{ch:orchestration} takes the graph machinery of the last two chapters
+and shows that the multi-agent patterns everyone talks about are thin builders
+over it.
