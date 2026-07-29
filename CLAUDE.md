@@ -10,22 +10,29 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, 5, **6** | 7, 8, 9, 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, 5, 6, **7** | 8, 9, 10, 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 167 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 180 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 17 screenshots outstanding (`make shots`)
-- 15 `verifybox` blocks
+- 19 screenshots outstanding (`make shots`)
+- 16 `verifybox` blocks
+- **Appendix B's benchmark tables are still empty** — Chapter 7 specifies the
+  experiment and deliberately reports no results. See item 7 below.
 
-Chapters 5 and 6 each added zero overfull hboxes, and Chapter 6's pass also
-removed a pre-existing one (its own stub's over-long section heading), so the
-book's total is **38**, down from 39. Check any new chapter the same way: build
-once with the chapter stubbed out, once with it in, and diff the `Overfull`
-lists. Attributing boxes by reading `main.log` nesting does not work.
+Overfull hboxes: **40**. Chapters 5 and 6 added none (6 removed a pre-existing
+one); Chapter 7 added two, both in Appendix D's manifest and both under 6 pt,
+which is smaller than the entries already there. Check any new chapter the same
+way: build once with the chapter stubbed out, once with it in, and diff the
+`Overfull` lists. Attributing boxes by reading `main.log` nesting does not work.
+
+Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
+land in Appendix D's narrow manifest column and overflow badly there — one such
+line cost 81 pt. Write screenshot instructions in prose, naming APIs in words
+rather than in `\code{}`.
 
 ---
 
@@ -258,6 +265,60 @@ uses this; Chapter 9 could use it as an evaluation-regression example.
 
 ---
 
+## Orchestration API — RESOLVED (Chapter 7 pass, July 2026)
+
+Verified against the orchestration builders and `Specialized/` in
+`Microsoft.Agents.AI.Workflows`, plus `samples/03-workflows/_StartHere/03_*` and
+`Orchestration/`. The brief was right about the four patterns and **missed a
+fifth**.
+
+**The "conveniences over the graph" claim is provable, not rhetorical.**
+`SequentialWorkflowBuilder.Build()` constructs `new WorkflowBuilder(previous)` and
+calls `AddEdge` in a loop; `ConcurrentWorkflowBuilder.Build()` calls
+`AddFanOutEdge` then `AddFanInBarrierEdge`. Chapter 7 §7.1 cites this directly.
+All five derive from `OrchestrationBuilderBase<TBuilder>`, which supplies
+`WithName`, `WithDescription`, `WithOutputFrom`, `WithIntermediateOutputFrom`.
+
+**Entry points** are all static on `AgentWorkflowBuilder`: `BuildSequential`,
+`BuildConcurrent`, `CreateSequentialBuilderWith`, `CreateConcurrentBuilderWith`,
+`CreateGroupChatBuilderWith(managerFactory)`, `CreateHandoffBuilderWith(agent)`,
+`CreateMagenticBuilderWith(managerAgent)`.
+
+**Handoff is richer than the brief suggested.** Transfers are injected tools with
+the prefix `handoff_to_`. The tool description the model routes on is derived from
+the target agent's `Description`, then `Name`, then `Instructions` — and
+`WithHandoff` **throws** if all three are absent. A vague description does not
+throw and degrades routing silently. Also present: `HandoffToolCallFilteringBehavior`
+(`None` / `HandoffOnly` / `All`, and `HandoffOnly` is what people want but is not
+the default), `EnableReturnToPrevious`, `WithAutonomousMode(turnLimit,
+continuationPrompt, per-agent overrides)`, `WithTerminationCondition` (sync and
+async), and `AddParticipants` — which, with no explicit handoffs declared, wires
+every agent to every other agent.
+
+**`GroupChatManager` is abstract**; the only required member is
+`SelectNextAgentAsync`. It tracks `IterationCount` / `MaximumIterationCount`, and
+has its own checkpointing hooks whose state keys are auto-prefixed
+`GroupChatManager_` to isolate subclass state. A custom manager holding state must
+use those hooks to survive a resume — same rule as Chapter 6 §6.2.
+`RoundRobinGroupChatManager` is the only in-box implementation.
+
+**Magentic is the fifth pattern and earned its own section (§7.6).** Manager agent
+plus participants; `WithMaxRounds`, `WithMaxStalls`, `WithMaxResets`,
+`RequirePlanSignoff`, `WithResponseLanguage`, `WithPromptOverrides`. It maintains
+a `MagenticProgressLedger` (`IsRequestSatisfied`, `IsInLoop`, `IsProgressBeingMade`,
+`NextSpeaker`, `InstructionOrQuestion`) — i.e. it distinguishes a round that made
+no progress from one that merely took time, which no other pattern does. Emits
+`MagenticPlanCreatedEvent` and `MagenticReplannedEvent`; lives in namespace
+`Microsoft.Agents.AI.Workflows.Specialized.Magentic`. Prompts are English by
+default and overridable via `MagenticDefaultPrompts` templates. **Plan sign-off is
+a request port**, so it checkpoints and resumes like any Chapter 6 HITL gate.
+
+**For the benchmark:** `UsageContent` / `UsageDetails` flow through messages and
+`MessageMerger` merges them, so per-run token accounting is reachable from the
+event stream. Turn count comes from `ExecutorInvokedEvent`.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -292,38 +353,29 @@ fixing** — fold this into the version-bump pass (item 4).
 `.Workflows.Declarative.Mcp` all exist upstream and are absent from the appendix.
 Fold in during the version-bump pass (item 4).
 
+**7. The orchestration benchmark has not been run. This is now the book's biggest
+outstanding debt.** Chapter 7 §7.7 fully specifies the experiment — one fixed task
+with a checkable answer, five implementations with model/temperature/instructions
+/tools held constant, four metrics (turn count, token cost, latency, success
+rate), ≥20 runs per pattern, medians and spreads rather than best runs — and
+reports **no results**, saying so in a warning box. Appendix B's tables are empty
+and must stay empty until the runs happen.
+
+This is the strongest external-publication material in the book and nobody has
+published it well for 1.0. It needs an Azure/OpenAI budget and a few hours, not
+more research. **Keep the raw event streams, not just the summary rows:**
+Chapter 9 re-scores the same runs under an evaluation harness and Chapter 12
+compares topologies empirically, and re-running to recover traces is expensive.
+
+Until it is run, no comparative performance claim anywhere in the book may be
+stated as fact. Chapter 7 labels all of its as judgement; keep that discipline.
+
 ---
 
 ## Remaining chapters
 
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
-
-### Chapter 7 — Multi-Agent Orchestration
-**Angle:** the four patterns are conveniences over the workflow graph. Knowing
-that tells you what to do when one stops fitting.
-
-**Already verified:** sequential, concurrent, group chat, handoff;
-`AgentWorkflowBuilder.CreateHandoffBuilderWith(triage).WithHandoff(a, b).Build()`;
-`AgentWorkflowBuilder.BuildSequential()` supports tool approval with no extra
-configuration; a `GroupChatToolApproval` sample exists in the repo.
-
-**The section that matters:** implement all four against one fixed task and
-measure turn count, token cost, latency, success rate. Nobody has published this
-well for 1.0. This is the strongest external-publication material in the book.
-
-**Cross-reference:** Chapter 3 §3.7 draws the delegation-vs-transfer line
-(`AsAIFunction` is delegation; handoff is transfer). Pay that off here.
-
-**Owed from Chapter 5:** the chapter argues the patterns are builders over the
-same graph. The evidence is in the source and should be shown, not asserted:
-`SequentialWorkflowBuilder`, `ConcurrentWorkflowBuilder`,
-`GroupChatWorkflowBuilder`, `HandoffWorkflowBuilder` and `MagenticWorkflowBuilder`
-all sit beside `WorkflowBuilder` in the same folder and all derive from
-`OrchestrationBuilderBase`. Note that **Magentic is a fifth pattern** the current
-brief does not mention — decide whether it earns a section.
-
----
 
 ### Chapter 8 — Middleware and Observability
 **Angle:** the framework tells you what happened, not whether it was any good.
@@ -368,6 +420,14 @@ check what is in it before assuming evaluation lives entirely in the extensions.
 **Reuse:** run the Chapter 7 benchmark under a scoring harness. Cover building an
 evaluation set from production traces, and where regression gates belong in CI —
 including the flakiness problem, which is the reason most teams abandon them.
+
+**Owed from Chapter 7:** §7.7 states plainly that its binary correctness score is
+not a quality measure, and names this chapter as the place that gap gets closed.
+It also tells the reader to keep the raw event streams for exactly this purpose.
+There is a `Microsoft.Agents.AI.Workflows/Evaluation/` folder as well as the core
+package one — check both. Note also that §7.7's "report distributions, not best
+runs" discipline is the same problem as evaluation flakiness, one chapter early;
+the two sections should agree with each other.
 
 ---
 

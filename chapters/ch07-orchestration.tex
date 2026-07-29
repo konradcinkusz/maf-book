@@ -2,27 +2,611 @@
 \label{ch:orchestration}
 
 \begin{quote}\itshape
-Four patterns, one benchmark, and the question of when to abandon all four.
+Five patterns, one benchmark, and the question of when to abandon all five.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+This is the chapter everyone wants to read first, and it is deliberately placed
+after the two that explain how the machinery works. The reason is that the
+orchestration patterns are not a separate system. They are small builders that
+emit the graphs of Chapter~\ref{ch:workflows-basics}, and the moment one of them
+stops fitting your problem --- which will happen --- the only useful thing to
+know is what it was building on your behalf.
+
+So this chapter does two things the marketing material does not. It shows the
+patterns as the graph constructions they are, from the source. And it sets out a
+measurement harness for choosing between them, because the question ``which
+orchestration pattern should I use'' currently gets answered with adjectives.
+
+\begin{verifybox}
+Derived from the source of \pkg{Microsoft.Agents.AI.Workflows} --- the
+orchestration builders and the \code{Specialized/} folder --- together with the
+orchestration samples upstream. Type and member names are reliable. The benchmark
+harness in \S\ref{sec:orch-benchmark} is the author's own design and has not been
+run; \textbf{no results are reported in this chapter}, and \S\ref{sec:orch-benchmark}
+says so explicitly rather than offering plausible numbers.
+\end{verifybox}
+
+% ============================================================
 \section{Patterns are conveniences over the graph}
+\label{sec:orch-conveniences}
+\index{orchestration!as graph construction}
 
+The claim is easy to state and usually asserted without evidence, so here is the
+evidence. Five builders sit in the same folder as \api{WorkflowBuilder}, and all
+five derive from a common base:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Builder} & \textbf{Pattern} \\
+\midrule
+\code{SequentialWorkflowBuilder} & Agents in a chain \\
+\code{ConcurrentWorkflowBuilder} & Agents in parallel, results aggregated \\
+\code{GroupChatWorkflowBuilder} & Turn-taking under a manager \\
+\code{HandoffWorkflowBuilder} & Agents transfer control to one another \\
+\code{MagenticWorkflowBuilder} & A manager plans, delegates and replans \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Each has a \code{Build()} method, and each of those methods constructs an
+ordinary workflow. The sequential builder walks its agents and adds a direct edge
+between each adjacent pair --- it is the \code{AddChain} of
+Chapter~\ref{ch:workflows-basics} with agents in it. The concurrent builder is
+more revealing still: it calls \code{AddFanOutEdge} from a start node to the
+agents, and \code{AddFanInBarrierEdge} from accumulators into an end node.
+
+That is the entire mechanism. Fan-out for concurrency, a barrier for the join ---
+exactly the two edge kinds of \S\ref{sec:wf-edges}, with the boilerplate written
+for you.
+
+\begin{note}
+The consequence worth carrying: \textbf{anything a pattern can do, you can do with
+the builder, and the reverse is not true}. The patterns are a vocabulary of five
+common shapes. When your problem is one of those five, use the pattern --- it is
+less code and less to get wrong. When it is not, you are not blocked, you are
+just back in Chapter~\ref{ch:workflows-basics}. There is no cliff between the two,
+which is the framework's best structural decision in this area.
+\end{note}
+
+You can see this for yourself with the visualiser from \S\ref{sec:wf-events},
+which is the fastest way to make the point concrete:
+
+\begin{csharp}[caption={A pattern is a graph}, label={lst:orch-visualise}]
+Workflow workflow = AgentWorkflowBuilder.BuildConcurrent(researcher, analyst, critic);
+
+// Prints the fan-out, the three agent nodes, and the barrier.
+Console.WriteLine(workflow.ToMermaidString());
+\end{csharp}
+
+\needscreenshot{orchestration-pattern-as-graph}{The concurrent pattern is a
+fan-out and a barrier}{Two rendered Mermaid diagrams side by side. On the left,
+the graph a three-agent concurrent workflow produces. On the right, the same
+graph hand-built with a fan-out edge and a barrier edge. The reader must be able
+to compare them node for node, so keep all identifiers legible. No editor
+chrome.}
+
+The shared base contributes the parts every pattern needs --- naming, and marking
+which agents' output counts:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Member} & \textbf{Purpose} \\
+\midrule
+\code{WithName} & Names the workflow, for traces and visualisation \\
+\code{WithDescription} & Describes it \\
+\code{WithOutputFrom} & Which agents' output is workflow output \\
+\code{WithIntermediateOutputFrom} & Emit output without ending the run \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% ============================================================
 \section{Sequential}
-\section{Concurrent}
-\section{Group chat}
-% Turn-taking and manager selection
+\label{sec:orch-sequential}
+\index{orchestration!sequential}
 
+The simplest pattern and the one to reach for by default. Agents run in order,
+each seeing what came before.
+
+\begin{csharp}[caption={A sequential pipeline}, label={lst:orch-sequential}]
+Workflow workflow = AgentWorkflowBuilder.BuildSequential(
+    outliner, drafter, editor, factChecker);
+\end{csharp}
+
+There is a builder form too, when you need to name the workflow or configure it.
+One option is worth knowing about: by default the chain carries the whole
+conversation forward, and it can be restricted to carrying only the agents'
+responses. That is a token-cost decision, not a correctness one, and it is the
+kind of thing \S\ref{sec:orch-benchmark} exists to settle.
+
+\begin{note}
+Sequential is underrated. A large fraction of what gets built as a group chat is
+a sequence with extra steps and three times the token cost, and the giveaway is
+that the ``discussion'' always proceeds in the same order anyway. If you can
+write down the order in advance, it is a sequence.
+\end{note}
+
+% ============================================================
+\section{Concurrent}
+\label{sec:orch-concurrent}
+\index{orchestration!concurrent}
+
+Several agents see the same input and work independently; their results are
+gathered. This is the pattern with the clearest win, because the latency
+improvement is structural rather than incidental --- three agents that each take
+four seconds take four seconds together rather than twelve.
+
+\begin{csharp}[caption={Independent analyses, joined}, label={lst:orch-concurrent}]
+Workflow workflow = AgentWorkflowBuilder.CreateConcurrentBuilderWith(
+        securityReviewer, performanceReviewer, styleReviewer)
+    .WithAggregator(results => results.SelectMany(r => r).ToList())
+    .WithName("code-review")
+    .Build();
+\end{csharp}
+
+The aggregator is the part to think about. Its default concatenates; whether that
+is what you want depends entirely on what happens next. Concatenation is right
+when a human reads the output, and usually wrong when another agent does --- three
+reviews stapled together are three times the context for a summariser that has to
+reconcile them.
+
+\begin{warning}
+Concurrency multiplies cost even when it divides latency. Three agents on one
+input is three times the input tokens, every time, whether or not all three had
+anything useful to say. The pattern pays when the analyses are genuinely
+independent and all of them are wanted. It does not pay as a way of ``getting a
+second opinion'' on work that one agent already did adequately --- that is a
+sequential critic, and it costs one extra call rather than $n$.
+\end{warning}
+
+% ============================================================
+\section{Group chat}
+\label{sec:orch-groupchat}
+\index{orchestration!group chat}
+
+Agents take turns in a shared conversation, and a manager decides who speaks
+next. The manager is the pattern; everything else is participants.
+
+\begin{csharp}[caption={Round-robin turn taking}, label={lst:orch-groupchat}]
+Workflow workflow = AgentWorkflowBuilder
+    .CreateGroupChatBuilderWith(agents =>
+        new RoundRobinGroupChatManager(agents) { MaximumIterationCount = 5 })
+    .AddParticipants(french, spanish, english)
+    .WithName("translation-round-robin")
+    .Build();
+\end{csharp}
+
+\api{GroupChatManager} is abstract, and its one required member selects the next
+agent. The in-box implementation rotates. Anything cleverer --- selecting by
+model, by keyword, by whose turn produced the least progress --- is a subclass.
+
+Two details of the base class matter in practice. It tracks an iteration count
+and enforces a maximum, which is the difference between a group chat and a
+non-terminating one. And it has its own checkpointing hooks with state keys
+automatically prefixed, so that a manager's state is isolated from the host's ---
+which means a custom manager that keeps state must persist it through those hooks
+to survive a resume, exactly as \S\ref{sec:dur-hooks} described for executors.
+
+\begin{warning}
+\textbf{Set the iteration limit deliberately.} A group chat's failure mode is not
+a crash, it is agents agreeing with each other at length until the limit is hit
+and the run ends with no conclusion. The limit is the safety net, not the
+termination condition --- if your chats routinely end by hitting it, the pattern
+is not converging and adding iterations will not fix it.
+\end{warning}
+
+\begin{note}
+Group chat is the pattern most often chosen for the wrong reason. It reads well in
+a demo because the transcript looks like collaboration. Ask what the manager is
+actually deciding: if the answer is ``it rotates'', you have a sequence in a loop
+and should compare it against one before shipping it.
+\end{note}
+
+% ============================================================
 \section{Handoff}
+\label{sec:orch-handoff}
+\index{orchestration!handoff}
+
+Handoff is transfer of control. One agent decides that another agent should take
+over the conversation, and does. This pays off the line drawn in
+Chapter~\ref{ch:tools}, \S\ref{sec:agents-as-tools}: exposing an agent as a
+function is \emph{delegation}
+--- the caller keeps control and gets a result back --- whereas handoff is
+\emph{transfer}, and the first agent is no longer driving.
+
 \subsection{Declaring the topology}
+
+You declare who may hand off to whom. The triage-and-specialists shape is the
+canonical one:
+
+\begin{csharp}[caption={A handoff topology}, label={lst:orch-handoff}]
+Workflow workflow = AgentWorkflowBuilder.CreateHandoffBuilderWith(triage)
+    .WithHandoffs(triage, [mathTutor, historyTutor])
+    .WithHandoffs([mathTutor, historyTutor], triage)
+    .Build();
+\end{csharp}
+
+Adding participants without declaring any handoffs wires every agent to every
+other agent. That is a convenient default for three agents and a poor one for
+ten, because the number of transfer options the model must choose between grows
+with the square of the participants.
+
 \subsection{Injected transfer tools}
+
+The mechanism is worth knowing because it explains both the pattern's
+capabilities and its failure modes. Handoff is implemented by giving each agent
+\emph{tools} --- one per permitted target, named with a common prefix. The model
+transfers control by calling one.
+
+Which means the model's choice of target is a tool-selection problem, and it is
+made on the strength of the tool's description. That description is not something
+you supply separately: the builder derives it from the target agent, falling back
+through its description, then its name, then its instructions.
+
+\begin{warning}
+\textbf{An agent with no description, no name and no instructions cannot be a
+handoff target.} The builder throws when it registers the handoff, which is the
+right behaviour and an unusually good error --- but the more common problem is the
+one that does not throw. An agent with a vague description is a valid target that
+the model will route to badly. The description is not documentation here. It is
+the routing table, read by a model, at run time.
+
+Write descriptions for handoff targets as though they were the only thing
+determining whether a user reaches the right specialist, because they are.
+\end{warning}
+
+Because transfers are tool calls, they appear in the conversation as tool calls,
+which is usually not what you want the next agent to see. The builder therefore
+offers filtering, with three settings:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Setting} & \textbf{Effect} \\
+\midrule
+\code{None} & Agents see all tool calls, including handoff plumbing \\
+\code{HandoffOnly} & Handoff calls are hidden; ordinary tool calls remain \\
+\code{All} & No tool calls are visible to downstream agents \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+\code{HandoffOnly} is the setting most people want and not the default. Leaving
+it unset means a specialist agent's context contains the mechanics of how it came
+to be called, which is noise at best and an invitation to comment on the routing
+at worst.
+
 \subsection{The hard case: handing back mid-turn}
+
+A specialist that finishes its work needs somewhere to go. Two mechanisms exist
+and they are not equivalent.
+
+The explicit one is to declare the reverse handoff, as the topology above does
+--- specialists can hand back to triage. The model must then choose to do so,
+which it may not, and a specialist that keeps the conversation is a specialist
+answering questions outside its competence.
+
+The other is to enable returning to the previous agent, which makes the handoff
+stack-like rather than a free graph. That is a better fit for the
+triage-and-return shape, because returning becomes structural rather than
+another decision the model has to get right.
+
+There is also an autonomous mode, in which agents continue without waiting for
+user input, bounded by a turn limit and driven by a continuation prompt --- both
+configurable globally or per agent. Treat the turn limit as a budget rather than
+a safety net, and set it having thought about what a runaway costs.
+
 \subsection{Topology to the developer, routing to the model}
 
-\section{A benchmark across all four}
-% Fixed task, four implementations: turn count, token cost, latency, success rate
-% -> original data; the strongest section in the book for external publication
+That subheading is the design, and it is worth stating as a principle because it
+tells you where to spend your effort.
 
+\textbf{You own the topology.} Which transfers are possible is a static property
+of your code, reviewable in a pull request, and enforceable. An agent cannot
+transfer to an agent you did not connect. This is a real safety property and it
+is the reason handoff is preferable to an agent that can invoke arbitrary other
+agents.
+
+\textbf{The model owns the routing.} Which transfer happens, on this input, is a
+run-time decision made by a language model reading tool descriptions.
+
+Debugging follows the split. A transfer that should have been possible and was
+not is your bug, in the builder. A transfer that was possible and went to the
+wrong place is a description problem, or an instructions problem, and no amount
+of rewiring will fix it. Establishing which of the two you have --- by checking
+whether the tool was even offered --- is the first step, and it takes thirty
+seconds if you look at the trace.
+
+% ============================================================
+\section{Magentic}
+\label{sec:orch-magentic}
+\index{orchestration!Magentic}
+
+There is a fifth pattern, it is materially different from the other four, and it
+is largely undocumented outside the source.
+
+In the first four patterns, the control structure is fixed at build time: a
+chain, a fan-out, a rotation, a topology. Magentic's is not. A manager agent
+writes a plan, delegates to participants, evaluates progress after each round,
+and replans when progress stops.
+
+\begin{csharp}[caption={A planning manager}, label={lst:orch-magentic}]
+Workflow workflow = new MagenticWorkflowBuilder(manager)
+    .AddParticipants([researcher, coder])
+    .WithMaxRounds(10)
+    .WithMaxStalls(3)
+    .WithMaxResets(2)
+    .RequirePlanSignoff(false)
+    .WithName("magentic-research")
+    .Build();
+\end{csharp}
+
+The three limits are the interesting part, because they encode a model of how
+this kind of orchestration fails. Rounds bound the total work. \emph{Stalls}
+bound consecutive rounds in which no progress was made. \emph{Resets} bound how
+many times the manager may throw away its plan and start again.
+
+That vocabulary comes from a progress ledger the manager maintains, which tracks
+whether the request is satisfied, whether the conversation is looping, whether
+progress is being made, who should speak next, and what they should be asked.
+
+\begin{note}
+\textbf{Loop detection is the feature here.} Every other pattern's answer to
+``these agents are going in circles'' is an iteration cap --- it stops the
+bleeding without noticing the wound. Magentic distinguishes a round that made no
+progress from a round that merely took time, and can respond by replanning rather
+than by continuing to spend. Whether it detects this \emph{well} is an empirical
+question this book does not yet have data on; that it attempts the distinction at
+all is what makes it worth a section.
+\end{note}
+
+Plan sign-off is the other notable capability, and it is where this chapter meets
+Chapter~\ref{ch:workflows-advanced}: requiring sign-off makes the manager's plan
+subject to human approval before any work is done. That is a request port in the
+sense of \S\ref{sec:dur-hitl}, which means a Magentic run awaiting plan approval
+checkpoints and resumes like anything else --- an approval gate in front of an
+expensive multi-agent run, for one configuration call.
+
+The pattern also emits its own events, so a plan and its revisions can be
+streamed rather than inferred:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Event} & \textbf{Raised when} \\
+\midrule
+\code{MagenticPlanCreatedEvent} & The manager has produced its initial plan \\
+\code{MagenticReplannedEvent} & The plan has been revised after a stall \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{versionbox}
+Magentic's prompts are English by default and overridable, with the built-in
+templates exposed so they can be copied and translated rather than rewritten from
+scratch. A response language can also be set directly. If you are building for a
+non-English audience, this is the pattern that needs the most attention --- its
+behaviour depends on prompts the framework supplies, not only on yours.
+\end{versionbox}
+
+\needscreenshot{magentic-plan-and-ledger}{A manager planning, stalling and
+replanning}{Console output of a Magentic run with the plan-created and replanned
+events printed, showing the initial plan, at least one round of delegation, and a
+replan triggered by a stall. The progress-ledger fields --- whether progress is
+being made, and the chosen next speaker --- must be visible for at least one
+round. Plain terminal.}
+
+% ============================================================
+\section{A benchmark across all five}
+\label{sec:orch-benchmark}
+\index{orchestration!benchmark}
+
+Everything above is description. Choosing between the patterns needs numbers, and
+the numbers do not exist publicly in any form worth citing. This section
+specifies the experiment.
+
+\begin{warning}
+\textbf{This section reports no results.} The harness below is a design, not a
+completed study. The tables in Appendix~\ref{app:providers} are deliberately
+empty and will stay empty until the experiment has actually been run. Any
+comparative statement elsewhere in this chapter is labelled as judgement, because
+that is what it is.
+
+A book that told you concurrent orchestration costs 2.8$\times$ the tokens of
+sequential, without having measured it, would be worse than one that admits it
+has not.
+\end{warning}
+
+\subsection{The design}
+
+\textbf{One task, five implementations.} The task must be fixed, non-trivial, and
+have a checkable answer --- otherwise success rate is unmeasurable and you are
+comparing prose. A research-and-summarise task over a fixed document set works,
+because correctness can be scored against known facts.
+
+\textbf{Hold everything else constant.} Same model, same temperature, same agent
+instructions, same tools. The only variable is the orchestration builder. This is
+harder than it sounds: the patterns have different natural prompt shapes, and the
+temptation to tune each one is the temptation to measure your tuning.
+
+\textbf{Four metrics}, and all four are needed, because every pattern wins on at
+least one:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Metric} & \textbf{How} \\
+\midrule
+Turn count & Count agent invocations from executor events \\
+Token cost & Sum usage content across the run, input and output separately \\
+Latency & Wall clock, first input to final output \\
+Success rate & Scored against the known answer, over $n$ runs \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Report distributions, not best runs.} These systems do not repeat
+themselves, so a single run of each pattern is an anecdote. Run each at least
+twenty times and report the median and the spread. A pattern with a good median
+and a terrible tail is not a good pattern, and reporting only the median hides
+exactly the failure you care about.
+
+\begin{csharp}[caption={The harness shape}, label={lst:orch-harness}]
+foreach (var (name, workflow) in Patterns(agents))
+{
+    for (int run = 0; run < RunCount; run++)
+    {
+        Stopwatch sw = Stopwatch.StartNew();
+        RunMetrics metrics = new(name, run);
+
+        await using StreamingRun handle =
+            await InProcessExecution.RunStreamingAsync(workflow, Task);
+
+        await foreach (WorkflowEvent evt in handle.WatchStreamAsync())
+        {
+            switch (evt)
+            {
+                case ExecutorInvokedEvent: metrics.Turns++; break;
+                case WorkflowOutputEvent output: metrics.Record(output); break;
+            }
+        }
+
+        metrics.Elapsed = sw.Elapsed;
+        metrics.Correct = await Scorer.ScoreAsync(metrics.Output, ExpectedAnswer);
+        await results.WriteAsync(metrics);
+    }
+}
+\end{csharp}
+
+\begin{note}
+Build the workflows through a factory keyed by pattern name, exactly as
+Chapter~\ref{ch:workflows-advanced} required for resume. A benchmark that
+constructs its graphs inline drifts between patterns without anyone noticing,
+which is the most common way a comparison like this becomes worthless.
+\end{note}
+
+\subsection{What the experiment cannot tell you}
+
+Being clear about this is what separates a benchmark from a marketing chart.
+
+The result is specific to one task, one model and one set of instructions. It
+does not generalise to your task. What generalises is the \emph{method}, and the
+rough shape of the trade --- that concurrency buys latency with tokens, that
+handoff buys specialisation with routing risk. The numbers are evidence for a
+decision on this task; they are not a ranking of the patterns.
+
+Nor does it measure quality beyond a binary correctness score. Two patterns can
+both be correct and differ enormously in how useful the output is, which is a gap
+Chapter~\ref{ch:evaluation} exists to close.
+
+\begin{note}
+Run this before Chapter~\ref{ch:evaluation} and keep the raw event streams, not
+just the summary rows. Chapter~\ref{ch:evaluation} scores the same runs under a
+proper evaluation harness, and Chapter~\ref{ch:capstone} compares topologies
+empirically --- both need the traces, and re-running to get them is expensive.
+\end{note}
+
+% ============================================================
 \section{When to drop to raw executors and edges}
+\label{sec:orch-dropping}
 
+The patterns cover common shapes. Here are the signals that yours is not one of
+them, in roughly the order they appear.
+
+\textbf{You are fighting the aggregator.} Post-processing a pattern's output into
+the shape you needed means the join is wrong, and the join is one line of graph.
+
+\textbf{You need a non-agent step in the middle.} Validation, a database write, a
+deterministic transform. The patterns take agents. The graph takes anything ---
+which is the symmetry of \S\ref{sec:wf-function-executor}, and the point at which
+it stops being theoretical.
+
+\textbf{Your control flow is conditional on data.} Patterns route on model output
+or a fixed structure. If the next step depends on a computed value, you want a
+conditional edge.
+
+\textbf{You need to pause somewhere specific.} Approval on one branch only, as in
+\S\ref{sec:dur-pipeline}, is a request port on that edge --- not something a
+pattern exposes. Magentic's plan sign-off is the exception that proves this: it
+is a pattern with one pause built in, at one point.
+
+\textbf{You are combining two patterns.} A concurrent fan-out whose results feed
+a group chat is not a pattern, it is a graph with a fan-out and a group chat host
+in it. Compose at the graph level.
+
+\begin{note}
+Dropping to the graph is not an escalation and it does not cost you the patterns.
+An orchestration builder produces a \api{Workflow}, and a workflow can be a node
+in another workflow. The realistic end state for a large system is a hand-built
+graph with pattern-built subgraphs inside it --- not a choice between the two.
+\end{note}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:observability}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Build the same three-agent review with \code{BuildConcurrent} and by hand
+      with a fan-out and a barrier. Render both with
+      \code{ToMermaidString()} and diff them. Whatever the diff shows is what the
+      pattern was doing for you.
+\item Run the benchmark in \S\ref{sec:orch-benchmark} for real, twenty runs per
+      pattern, and fill in Appendix~\ref{app:providers}. This is the single most
+      valuable thing in this book that has not been done yet.
+\item Remove a handoff target's description and confirm the builder throws. Then
+      make it merely vague and confirm that it does not --- and watch the routing
+      degrade.
+\item Give a group chat a task with no natural stopping point and watch it hit
+      the iteration limit. Then implement a manager that terminates on agreement
+      instead, and compare token cost.
+\item Take the Magentic workflow, turn on plan sign-off, and reject the first
+      plan. Confirm the run checkpoints while it waits, using
+      Chapter~\ref{ch:workflows-advanced}'s machinery.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+The orchestration patterns are builders that emit ordinary workflows. The
+sequential builder adds direct edges between adjacent agents; the concurrent
+builder adds a fan-out and a barrier. Reading those two \code{Build()} methods is
+the fastest way to stop thinking of the patterns as a separate system, and it is
+what tells you that leaving them is a step sideways rather than a step down.
+
+Sequential is the default and is underrated. Concurrent divides latency and
+multiplies cost, so it pays when the analyses are genuinely independent and all
+of them are wanted. Group chat needs a manager that is deciding something --- if
+it merely rotates, compare it against a sequence before shipping it --- and its
+iteration limit is a safety net rather than a termination condition.
+
+Handoff is transfer rather than delegation, implemented by injecting one tool per
+permitted target. The topology is yours and is enforceable; the routing is the
+model's and is made by reading the target agents' descriptions, which makes those
+descriptions a routing table rather than documentation. Filter handoff tool calls
+out of downstream context, and prefer structural return over hoping the model
+chooses to hand back.
+
+Magentic is a fifth pattern with a different character: a manager that plans,
+delegates, evaluates progress and replans, bounded by rounds, stalls and resets.
+Stall detection is the capability the other four lack, and optional plan sign-off
+puts a human approval gate in front of the work using
+Chapter~\ref{ch:workflows-advanced}'s machinery.
+
+Choosing between them needs measurement, and this chapter specifies the
+experiment rather than reporting it: one fixed task with a checkable answer, five
+implementations with everything else held constant, four metrics, twenty runs
+each, distributions rather than best runs. The tables in
+Appendix~\ref{app:providers} stay empty until that is done.
+
+Chapter~\ref{ch:observability} makes the runs visible, which is what turns the
+benchmark from a spreadsheet into an explanation.
