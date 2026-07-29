@@ -10,26 +10,28 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, 5, 6, 7, 8, 9, **10** | 11, 12 |
+| Chapters | 1–10, **11** | **12 only** |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 212 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 224 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 24 screenshots outstanding (`make shots`)
-- 20 `verifybox` blocks
+- 25 screenshots outstanding (`make shots`)
+- 22 `verifybox` blocks
 - **Two unrun experiments, both fully specified, neither reporting results:**
   the orchestration benchmark (Ch. 7 §7.7, scored by Ch. 9 §9.5) and the
   cold-start measurement (Ch. 10 §10.5.3, owed to Ch. 6 §6.2). See item 7 below.
+- **Ch. 11 §11.6's conflict-of-interest disclosure needs the author's review** —
+  written generically because only the author knows the specifics. See item 8.
 
-Overfull hboxes: **42**. Chapters 5, 6 and 10 added none (6 removed a
-pre-existing one); Chapters 7, 8 and 9 added four between them, all in Appendix
-D's manifest and all under 13 pt, which is smaller than the entries already
-there. Check any new chapter the same way: build once with the chapter stubbed
-out, once with it in, and diff the `Overfull` lists. Attributing boxes by reading
-`main.log` nesting does not work.
+Overfull hboxes: **44**. Chapters 5, 6 and 10 added none (6 removed a
+pre-existing one); Chapters 7, 8, 9 and 11 added six between them, all under
+13 pt and all but one in Appendix D's manifest, which is smaller than the entries
+already there. Check any new chapter the same way: build once with the chapter
+stubbed out, once with it in, and diff the `Overfull` lists. Attributing boxes by
+reading `main.log` nesting does not work.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -495,6 +497,56 @@ be hosted as a single agent, and callers never learn it was a graph.
 
 ---
 
+## Harness API — RESOLVED (Chapter 11 pass, July 2026)
+
+Verified against `Microsoft.Agents.AI.Harness`, the `Harness/` and `Skills/`
+folders of `Microsoft.Agents.AI`, and `Microsoft.Agents.AI.Tools.Shell`.
+
+**The split matters and answers the brief's question.** The Harness *package* is
+three files (`HarnessAgent`, `HarnessAgentOptions`, `ChatClientHarnessExtensions`).
+**Every provider lives in the core package** under `Harness/`: `AgentMode`,
+`BackgroundAgents`, `FileAccess`, `FileMemory`, `FileStore`, `Loop`, `Todo`,
+`ToolApproval` — plus `Skills/` at the core root. So a provider can be lifted onto
+an ordinary agent; it is not harness-or-nothing. §11.1 makes this the framing.
+
+**Signature correction.** It is `chatClient.AsHarnessAgent(options?,
+loggerFactory?, services?)` — not the `(maxContextTokens, maxOutputTokens,
+options)` form the old note recorded. Token limits are `MaxContextWindowTokens` /
+`MaxOutputTokens` **on** `HarnessAgentOptions`.
+
+**Compaction is DISABLED when options is null** — stated in the extension
+method's own docs. A harness workload is exactly what overflows, so this is the
+chapter's headline warning (§11.1). Options are mostly `Disable*` switches:
+compaction, file memory, web search, todo, agent mode, skills, OpenTelemetry,
+tool auto-approval, approval-response binding.
+
+**`Loop/` is a real feature the brief did not mention, and §11.2.8 covers it.**
+`LoopEvaluator` decides whether the agent is *done*: `AIJudgeLoopEvaluator` (chat
+client judge, `VERDICT: DONE` / `VERDICT: MORE` markers, `JudgeVerdict` carries a
+**gap analysis fed back as the next instruction**), `CompletionMarkerLoopEvaluator`,
+`BackgroundTaskCompletionLoopEvaluator`, `DelegateLoopEvaluator`. Chapter 9's
+judge cautions apply verbatim.
+
+**Shell sandboxing is the best-designed part of the framework.**
+`Microsoft.Agents.AI.Tools.Shell` ships `LocalShellExecutor` and
+`DockerShellExecutor`. Local has `ConfineWorkingDirectory = true`,
+`CleanEnvironment`, `ShellPolicy`, and an **`AcknowledgeUnsafe` flag you must
+set**. Docker defaults: `Network = none`, `ReadOnlyRoot = true`,
+`MountReadonly = true`, `User = 65534:65534` (nobody), `PidsLimit`,
+`MaxOutputBytes = 64 KB`. `DockerNetworkMode.Host` is described in-source as
+"strongly discouraged for untrusted code".
+
+**Other defaults worth knowing:** `AgentModeState.CurrentMode` starts at
+**`"plan"`**, not execute. Tool auto-approval is **on** by default.
+`AgentSkillsProvider` exposes `load_skill` / `read_skill_resource` /
+`run_skill_script` (progressive disclosure) plus ready-made auto-approval rules
+`ReadOnlyToolsAutoApprovalRule` and `AllToolsAutoApprovalRule`.
+`AgentFileStore` is abstract with `FileSystemAgentFileStore` and
+`InMemoryAgentFileStore` in-box — the in-memory one is the test seam. Note its
+`SearchAsync` takes a regex, so a naive custom store will be the bottleneck.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -554,44 +606,26 @@ cost**, which is why Chapter 6 §6.2 exercise 4 measures rehydration on its own.
 Needs the same Azure subscription as the rest of Chapter 10. Smaller and cheaper
 than item 7; do it first if budget is tight.
 
+**8. Chapter 11 §11.6's AgentHelm disclosure is written generically and needs the
+author.** The brief said the overlap with AgentHelm is substantial and should be
+stated plainly rather than avoided. §11.6 does state it plainly — a disclosure
+note, a list of what the platform now does for free, a list of what it does not
+(multi-user, audit, policy enforcement, fleet-level questions), and the honest
+conclusion to build on the harness rather than around it. But it names no
+specifics about AgentHelm, because those were not verifiable from the repository
+and inventing them would be worse than omitting them.
+
+**Only the author can finish this section.** Decide whether to name the product
+outright, and replace the generic overlap claim with the actual feature-by-feature
+position. The structure is there; the facts are not. Leave it generic rather than
+guessing if you would rather not name it in print.
+
 ---
 
 ## Remaining chapters
 
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
-
-### Chapter 11 — The Agent Harness
-**Already verified:** `Microsoft.Agents.AI.Harness` provides `HarnessAgent`;
-`chatClient.AsHarnessAgent(maxContextTokens, maxOutputTokens,
-new HarnessAgentOptions {...})`; `FileSystemAgentFileStore`;
-`HarnessConsole.RunAgentAsync`. Built-in providers: `FileMemoryProvider`,
-`FileAccessProvider`, `TodoProvider`, `AgentModeProvider` (plan vs execute),
-`AgentSkillsProvider`, `BackgroundAgentsProvider`, hosted web search, sandboxed
-`ShellExecutor` (.NET only). Middleware: `ToolApprovalAgent`,
-`OpenTelemetryAgent`. Pluggable `AgentFileStore` backends. There is also a
-`Microsoft.Agents.AI/Harness/` folder in the core package — check the split.
-
-**Correction already applied to Chapter 1:** CodeAct is **not Python-only** —
-`Microsoft.Agents.AI.Hyperlight` exists for .NET, and there is now a
-`Microsoft.Agents.AI.LocalCodeAct` as well. Benchmark from the BUILD post:
-27.81s → 13.23s, 6,890 → 2,489 tokens on a multi-step workload.
-
-**The honest section:** what the harness means for third-party agent cockpits.
-The overlap with AgentHelm is substantial and should be stated plainly rather than
-avoided.
-
-**Owed from Chapter 10:** §10.5.2 says the per-session VM-isolated sandbox is
-what makes hosted agents interesting for anything running shell commands, and
-names this chapter as where that is taken seriously. §10.6 sets the frame this
-chapter has to keep: agent security is **blast-radius management, not
-prevention** — you cannot reliably stop a model being manipulated by text it
-reads, so the design question is what it may do afterwards. Tool approval is the
-one human-decision seam in a chain of model decisions. Note also that
-`Microsoft.Agents.AI.Foundry.Hosting` already has consent plumbing worth reusing
-here: `ConsentAwareMcpClientAIFunction`, `McpConsentContext`, `ToolApprovalIdMap`.
-
----
 
 ### Chapter 12 — Capstone
 No new API surface. One system using everything prior: ingest MAF GenAI traces,
@@ -616,6 +650,16 @@ contributed nothing in 8 of 20 runs'"), and §9.6's trend-over-time chart is the
 other thing no single gate catches — both are natural capstone features. Also
 reuse §9.4's trace-selection criteria for "surface wasted turns": the signals are
 the same ones (loop-cap hits, turn counts far above median, abandoned runs).
+
+**Owed from Chapter 11 — this is the capstone's actual spec.** §11.6 lists what
+the platform now does for free and what it does not, and the second list *is* the
+capstone: multi-user, audit trail, policy enforcement ("nobody in this
+organisation may turn the network on in a shell sandbox" — defaults are not
+policy), and the fleet-level questions that only appear at a hundred agents
+across forty people over a week: which cost the most, which fail most often,
+which are worth keeping. §11.6 explicitly names Chapter 12 as where that is
+built, and closes by saying the loop is free and the organisational layer is not.
+Chapter 12's "what v1 deliberately leaves out" should answer §11.6 directly.
 
 ---
 
