@@ -10,26 +10,26 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, 5, 6, 7, 8, **9** | 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, 5, 6, 7, 8, 9, **10** | 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 202 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 212 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 23 screenshots outstanding (`make shots`)
-- 19 `verifybox` blocks
-- **Appendix B's benchmark tables are still empty** — Chapter 7 specifies the
-  experiment and Chapter 9 §9.5 adds the scoring harness, but neither reports
-  results because the runs have not happened. See item 7 below.
+- 24 screenshots outstanding (`make shots`)
+- 20 `verifybox` blocks
+- **Two unrun experiments, both fully specified, neither reporting results:**
+  the orchestration benchmark (Ch. 7 §7.7, scored by Ch. 9 §9.5) and the
+  cold-start measurement (Ch. 10 §10.5.3, owed to Ch. 6 §6.2). See item 7 below.
 
-Overfull hboxes: **42**. Chapters 5 and 6 added none (6 removed a pre-existing
-one); Chapters 7, 8 and 9 added four between them, all in Appendix D's manifest
-and all under 13 pt, which is smaller than the entries already there. Check any
-new chapter the same way: build once with the chapter stubbed out, once with it
-in, and diff the `Overfull` lists. Attributing boxes by reading `main.log`
-nesting does not work.
+Overfull hboxes: **42**. Chapters 5, 6 and 10 added none (6 removed a
+pre-existing one); Chapters 7, 8 and 9 added four between them, all in Appendix
+D's manifest and all under 13 pt, which is smaller than the entries already
+there. Check any new chapter the same way: build once with the chapter stubbed
+out, once with it in, and diff the `Overfull` lists. Attributing boxes by reading
+`main.log` nesting does not work.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -444,6 +444,57 @@ stop being recognised — §9.3 has a versionbox on pinning them.
 
 ---
 
+## Hosting / A2A API — RESOLVED (Chapter 10 pass, July 2026)
+
+Verified against `Microsoft.Agents.AI.Hosting`, `.Hosting.AspNetCore`,
+`.DurableTask`, `.Hosting.AzureFunctions`, `.A2A`, `.Hosting.A2A`,
+`.Hosting.A2A.AspNetCore` and `.Foundry.Hosting`.
+
+**Agents register by name on the host builder:** `builder.AddAIAgent(name,
+instructions, ...)` → `IHostedAgentBuilder`, then `.WithAITool(s)`,
+`.WithInMemorySessionStore()`, `.WithSessionStore(...)`. Workflows have a parallel
+set (`HostApplicationBuilderWorkflowExtensions`, `HostedWorkflowBuilder`).
+
+**`AgentSessionStore` is abstract** with Save/Get/Delete. Session-store
+registration takes `withIsolation = true` **by default** and wraps the store in an
+`IsolationKeyScopedAgentSessionStore`.
+
+**Session isolation is the security story and it is well documented in-source.**
+`UseClaimsBasedSessionIsolation()` in `.Hosting.AspNetCore`. The provider's own
+remarks warn that the claim **must uniquely identify the principal** — display
+names, usernames and email aliases are unsafe, because two principals sharing a
+value get the same isolation key and can read/overwrite each other's sessions.
+Default claim is `ClaimTypes.NameIdentifier` (OIDC `sub`), and the remarks
+explicitly note this is **not** Entra's `oid`. Missing claim ⇒ null key; decide
+store behaviour for that case. §10.1 has this as a warning.
+
+**Two durabilities, and Chapter 10 §10.3 makes the distinction a table:**
+workflow checkpointing = durability of the *graph*; the durable extension =
+durability of the *host*. They compose.
+
+**`DurableAgentsOptions.DefaultTimeToLive` is 14 days.** Entities expire, so a
+conversation resumed after the window comes back **empty rather than failing**.
+Registration: `AddAIAgentFactory(name, factory, timeToLive?)` / `AddAIAgent(s)`.
+Also `AsDurableAgentProxy(agent, services)`, `DurableAIAgent`, `AgentEntity`.
+
+**A2A: the boundary disappears at the type level.** A remote agent becomes an
+ordinary `AIAgent` via `card.AsAIAgent(...)`, `client.AsAIAgent(...)` or
+`resolver.GetAIAgentAsync(...)`. So a remote agent can be a workflow node, a
+handoff target or a tool — the §5.2 symmetry extended over the network. Server
+side: `AddA2AServer(name)` + `MapA2AHttpJson(name, path)`. There is also an
+AG-UI family (`.AGUI`, `.Hosting.AGUI.AspNetCore`) for agent→front-end streaming.
+
+**Foundry hosting:** `AddFoundryResponses(agent, sessionStore?)` +
+`MapFoundryResponses(prefix)`. `FileSystemAgentSessionStore` and
+`InMemoryAgentSessionStore` are in-box. Also present and relevant to Chapter 11:
+`ConsentAwareMcpClientAIFunction`, `McpConsentContext`, `ToolApprovalIdMap`,
+`HostedSessionIsolationKeyProvider`, Foundry toolbox support with a health check.
+
+**`WorkflowHostingExtensions.AsAIAgent(Workflow, ...)`** confirmed — a graph can
+be hosted as a single agent, and callers never learn it was a graph.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -495,40 +546,20 @@ compares topologies empirically, and re-running to recover traces is expensive.
 Until it is run, no comparative performance claim anywhere in the book may be
 stated as fact. Chapter 7 labels all of its as judgement; keep that discipline.
 
+**7b. The cold-start measurement has not been run either.** Chapter 10 §10.5.3
+specifies it — warm baseline, forced scale-to-zero, ≥20 cold invocations,
+distribution not best run — and reports nothing, in a warning box. The step that
+makes it publishable is **separating platform cold start from graph rehydration
+cost**, which is why Chapter 6 §6.2 exercise 4 measures rehydration on its own.
+Needs the same Azure subscription as the rest of Chapter 10. Smaller and cheaper
+than item 7; do it first if budget is tight.
+
 ---
 
 ## Remaining chapters
 
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
-
-### Chapter 10 — Hosting, Durability and A2A
-**Already verified:** `Microsoft.Agents.AI.DurableTask`;
-`Hosting.AzureFunctions`; `Foundry.Hosting`; `Microsoft.Agents.AI.A2A` +
-`Hosting.A2A` + `Hosting.A2A.AspNetCore`; `AGUI` packages; Foundry hosted agents
-wire up via `builder.Services.AddFoundryResponses(agent)` and
-`app.MapFoundryResponses()`; scale-to-zero with filesystem intact, per-session
-VM-isolated sandboxes.
-
-**Make the distinction explicit:** durable extension = durability of the *host*;
-workflow checkpointing = durability of the *graph*. Different problems.
-
-**Owed from Chapter 6:** §6.2 exercise 4 sends the reader here for the cold-start
-number and says rehydration cost must be measured separately before the hosting
-claim can be judged. Chapter 6 also notes that pointing the file-system checkpoint
-store at a mounted volume is what makes a run survive the container — the
-scale-to-zero story has to be consistent with that. There is also
-`WorkflowHostingExtensions.AsAIAgent(Workflow, ...)`: a workflow can be hosted as
-an agent, which is the natural bridge from Chapter 6 into this chapter.
-
-**Build:** Aspire AppHost (agent + Postgres + OTLP collector + Blazor); a .NET
-agent delegating to a Python agent over A2A — few people will have built this and
-it demos extremely well; measure cold start after scale-to-zero.
-
-**Note:** this is the one chapter that legitimately requires an Azure
-subscription. Say so at the top.
-
----
 
 ### Chapter 11 — The Agent Harness
 **Already verified:** `Microsoft.Agents.AI.Harness` provides `HarnessAgent`;
@@ -549,6 +580,16 @@ new HarnessAgentOptions {...})`; `FileSystemAgentFileStore`;
 **The honest section:** what the harness means for third-party agent cockpits.
 The overlap with AgentHelm is substantial and should be stated plainly rather than
 avoided.
+
+**Owed from Chapter 10:** §10.5.2 says the per-session VM-isolated sandbox is
+what makes hosted agents interesting for anything running shell commands, and
+names this chapter as where that is taken seriously. §10.6 sets the frame this
+chapter has to keep: agent security is **blast-radius management, not
+prevention** — you cannot reliably stop a model being manipulated by text it
+reads, so the design question is what it may do afterwards. Tool approval is the
+one human-decision seam in a chain of model decisions. Note also that
+`Microsoft.Agents.AI.Foundry.Hosting` already has consent plumbing worth reusing
+here: `ConsentAwareMcpClientAIFunction`, `McpConsentContext`, `ToolApprovalIdMap`.
 
 ---
 

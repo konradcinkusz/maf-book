@@ -5,29 +5,516 @@
 From a console app to something that survives a restart and answers on a URL.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+Everything so far has run in a process you started. This chapter is about the
+transition to something that runs whether or not you are watching: an agent
+behind an HTTP endpoint, with its sessions in a database, its traces going
+somewhere, and its lifetime measured in weeks rather than in the duration of a
+\code{Main} method.
+
+It also covers the protocol that lets your agent talk to somebody else's, which
+is the part of this chapter with the longest half-life. Frameworks and hosting
+models change every eighteen months. An interoperability protocol that several
+vendors have agreed on outlives all of them.
+
+\begin{note}
+\textbf{This is the one chapter that legitimately requires a cloud
+subscription.} Sections \ref{sec:host-aspnet} through \ref{sec:host-a2a} run
+entirely on your machine, and the A2A example needs nothing but two processes.
+\S\ref{sec:host-foundry} does not: hosted agents are a managed service, and there
+is no local emulator. If you have no subscription, read that section for the
+model and skip the exercise.
+\end{note}
+
+\begin{verifybox}
+Derived from the source of the hosting packages --- core hosting, the ASP.NET
+Core integration, the Durable Task extension, the A2A client and server packages,
+and Foundry hosting --- at the pinned train. Type and member names are reliable.
+The Aspire application in \S\ref{sec:host-aspire} and the A2A worked example in
+\S\ref{sec:host-a2a} are the author's own compositions and have not been run as a
+single solution.
+\end{verifybox}
+
+% ============================================================
 \section{Hosting an agent in ASP.NET Core}
+\label{sec:host-aspnet}
+\index{hosting!ASP.NET Core}
 
+Agents register on the host builder like any other service, by name:
+
+\begin{csharp}[caption={Registering an agent}, label={lst:host-register}]
+builder.AddAIAgent("support", instructions: "You are a support agent.")
+       .WithAITool(AIFunctionFactory.Create(LookupOrder))
+       .WithInMemorySessionStore();
+\end{csharp}
+
+The name matters more than it looks. It is the key the agent is resolved by, the
+identity it reports in traces, and --- once \S\ref{sec:host-a2a} exposes it --- the
+route it answers on. Treat it as a stable public identifier, not a variable name.
+
+\subsection{Sessions are the hosting problem}
+
+A console agent keeps its session in a local variable. A hosted agent cannot:
+requests arrive on different threads, from different users, possibly on different
+instances. So the session has to live somewhere, and that somewhere is an
+abstraction with three methods --- save, get, delete.
+
+The in-memory store is for development. It loses everything on restart and, on
+more than one instance, routes the same user's second request to a machine that
+has never heard of them. Chapter~\ref{ch:memory} built a real one; this is where
+it gets registered.
+
+\begin{csharp}[caption={A session store that survives}, label={lst:host-sessions}]
+builder.AddAIAgent("support", instructions: SupportInstructions)
+       .WithSessionStore(sp => new PostgresAgentSessionStore(
+           sp.GetRequiredService<IDbContextFactory<AgentDbContext>>()));
+\end{csharp}
+
+\subsection{Session isolation, which is not optional}
+
+Here is the part that deserves your full attention, because getting it wrong is a
+data breach rather than a bug.
+
+Session stores are keyed by session identifier. If two users can reach the same
+session identifier, they read each other's conversations. The framework's answer
+is an isolation key: a second dimension on the store, derived from who is asking,
+so that a session identifier is only meaningful within one principal's scope. The
+store registration takes an isolation flag, and it defaults to on --- a good
+default, and one worth not overriding.
+
+In an ASP.NET Core application the isolation key comes from the authenticated
+user's claims:
+
+\begin{csharp}[caption={Isolating sessions by principal}, label={lst:host-isolation}]
+builder.Services.UseClaimsBasedSessionIsolation();
+\end{csharp}
+
+\begin{warning}
+\index{hosting!session isolation}
+\textbf{The claim you isolate on must uniquely identify the principal.} The
+framework's own documentation is unusually blunt about this, and it is right to
+be: display names, usernames and email aliases are \emph{unsafe} isolation keys
+unless you can prove uniqueness across every caller, because two principals
+sharing a value receive the same isolation key and can read and overwrite one
+another's sessions.
+
+The default is the stable subject identifier, which is normally populated from
+the OpenID Connect \code{sub} claim. Note that this is \emph{not} the same as
+Entra's object identifier, and if your provider maps claims differently you must
+say so explicitly rather than assuming the default fits.
+
+If the claim is missing --- unauthenticated request, misconfigured mapping --- the
+provider yields no key. Decide what your store does in that case before you
+deploy, not after.
+\end{warning}
+
+\begin{note}
+Workflows host the same way. There is a parallel set of registrations for hosted
+workflows, and --- more usefully --- a workflow can be adapted into an
+\api{AIAgent} outright. That is the bridge from Chapter~\ref{ch:workflows-basics}
+into this one: a graph of five agents becomes one agent, hosted like any other,
+and callers never learn it was a graph.
+\end{note}
+
+% ============================================================
 \section{.NET Aspire integration}
-% AppHost: agent service + PostgreSQL + OTLP collector + Blazor front end
-% SCREENSHOT: aspire-apphost-resources
+\label{sec:host-aspire}
+\index{Aspire}
 
+An agent in production is never just an agent. It is an agent, a database for
+sessions, somewhere for traces to go, and a front end. Wiring those together by
+hand is the tedious part of the job, and Aspire exists to remove it.
+
+The app host describes the topology in C\#, and hands each service the connection
+details for the others:
+
+\begin{csharp}[caption={The application, described}, label={lst:host-apphost}]
+IDistributedApplicationBuilder builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("pg").AddDatabase("agentdb");
+
+var agent = builder.AddProject<Projects.AgentService>("agent")
+                   .WithReference(postgres);
+
+builder.AddProject<Projects.WebFrontend>("web")
+       .WithReference(agent);
+
+builder.Build().Run();
+\end{csharp}
+
+The practical payoff is the dashboard. It collects the OpenTelemetry from
+Chapter~\ref{ch:observability} with no exporter configuration at all --- which
+means both activity sources from \S\ref{sec:obs-otel} are already being
+collected, and the dropped-delivery query from \S\ref{sec:obs-dropped} works
+against a locally running graph.
+
+\begin{note}
+Aspire is a development-time orchestrator, not a production runtime. It describes
+your topology and can generate deployment manifests, but the thing that runs in
+production is a container in a cluster like anything else. Treating the app host
+as your production architecture is a category error that surfaces late.
+\end{note}
+
+\needscreenshot{aspire-apphost-resources}{The whole system, running locally}{The
+Aspire dashboard resources view with the agent service, the PostgreSQL container
+and the front end all running, showing their endpoints and health states. Then,
+in the same capture or immediately alongside, the traces view listing agent
+invocations collected without any exporter configuration. The reader should be
+able to see that the telemetry arrived for free. Browser only.}
+
+% ============================================================
 \section{The durable extension}
-% Durable Task-backed long-running agents
-% How this differs from workflow checkpointing: durability of the host, not the graph
+\label{sec:host-durable}
+\index{hosting!durable agents}
 
+An agent conversation that spans days does not fit in a request. The Durable Task
+extension makes an agent an addressable, persistent entity: it has a name, it has
+sessions with identifiers, and its state survives the process by living in
+storage rather than in memory.
+
+\subsection{Two durabilities, and they are different problems}
+
+This is the distinction the chapter title implies and the one worth being precise
+about, because both are called durability and they solve different failures.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Mechanism} & \textbf{Makes durable} \\
+\midrule
+Workflow checkpointing (Ch.~\ref{ch:workflows-advanced}) & The \emph{graph}: which
+node is next, what state it carries, what messages are pending \\[4pt]
+The durable extension & The \emph{host}: an agent's identity and conversation
+state across process lifetimes \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+A checkpointed workflow running in a process that dies is recoverable, but
+somebody has to notice and resume it. A durable agent is recovered by the
+platform because its state was never in the process to begin with. They compose:
+a durable host running a checkpointed workflow is the belt-and-braces
+arrangement, and it is what a genuinely long-running approval process wants.
+
+\subsection{Registration and lifetime}
+
+Agents are registered into the durable options by name and factory, and the
+detail worth catching is that entities expire:
+
+\begin{csharp}[caption={A durable agent}, label={lst:host-durable}]
+builder.Services.Configure<DurableAgentsOptions>(options =>
+{
+    options.AddAIAgentFactory("support",
+        sp => sp.GetRequiredKeyedService<AIAgent>("support"),
+        timeToLive: TimeSpan.FromDays(30));
+});
+\end{csharp}
+
+\begin{warning}
+There is a default time to live on durable agent entities, measured in days
+rather than indefinitely. That is a sensible default --- unbounded entity growth
+is its own outage --- but it means a conversation resumed after the window has
+lapsed comes back empty rather than failing.
+
+Set it deliberately against your product's actual expectations. If a user can
+reasonably return to a conversation after a month, the default does not match
+your product, and the failure will look like amnesia rather than an error.
+\end{warning}
+
+Azure Functions is the natural host for this, and the extension package builds
+the function metadata for registered agents automatically, including HTTP
+triggers. That is the serverless path: no always-on process, and state in the
+Durable Task backend.
+
+% ============================================================
 \section{Agent-to-Agent protocol}
+\label{sec:host-a2a}
+\index{A2A}
+
 \subsection{The protocol}
+
+A2A is an open protocol for one agent to call another across an organisational
+boundary. The reason it matters is not technical elegance. It is that the
+alternative --- every pair of teams inventing a bespoke HTTP contract --- does not
+scale past about three teams, and there is no reason for it to be bespoke.
+
+Three pieces:
+
+\begin{itemize}[leftmargin=1.4em]
+\item An \textbf{agent card}: a discovery document at a well-known URL, saying
+      what the agent is, what it can do, and how to talk to it.
+\item \textbf{Tasks}: a request creates a task with a lifecycle, so long-running
+      work does not need a held connection.
+\item \textbf{Artifacts and messages}: the structured results of a task, which
+      may be more than text.
+\end{itemize}
+
+\subsection{The client side, where the boundary disappears}
+
+This is the elegant part and the thing to take away from the section. A remote
+A2A agent is converted into an ordinary \api{AIAgent}:
+
+\begin{csharp}[caption={A remote agent, locally}, label={lst:host-a2a-client}]
+A2ACardResolver resolver = new(new Uri("https://research.example.com"));
+AIAgent researcher = await resolver.GetAIAgentAsync();
+
+AgentResponse response = await researcher.RunAsync("Summarise Q3 filings.");
+\end{csharp}
+
+That is the same \api{AIAgent} the rest of the book has been using. Which means ---
+and this is worth pausing on --- a remote agent owned by another team can be a
+node in a Chapter~\ref{ch:workflows-basics} workflow, a handoff target in a
+Chapter~\ref{ch:orchestration} topology, or a tool on a local agent. It is the
+same symmetry as \S\ref{sec:wf-function-executor}, extended across the network:
+the protocol boundary is invisible at the type level.
+
+\begin{warning}
+Invisible at the type level is not invisible at run time. A remote agent has
+latency you do not control, failure modes you cannot fix, and a cost somebody
+else sets. Wrap remote agents in a timeout and a circuit breaker before putting
+one on a critical path, and remember that a workflow node which never returns
+stalls the superstep it is in.
+\end{warning}
+
 \subsection{Hosting an A2A agent in ASP.NET Core}
+
+The server side is two calls --- register, and map a route:
+
+\begin{csharp}[caption={Exposing an agent over A2A}, label={lst:host-a2a-server}]
+builder.AddA2AServer("support");
+
+WebApplication app = builder.Build();
+
+app.MapA2AHttpJson("support", "/a2a/support");
+\end{csharp}
+
+The agent card is served from that route, so discovery works without you writing
+a discovery endpoint.
+
 \subsection{Worked example: a .NET agent delegating to a Python agent}
 
+This is the demonstration worth building, because very few people have, and it
+makes the interoperability claim concrete rather than aspirational.
+
+The shape: a Python agent exposing an A2A endpoint, and a .NET application that
+resolves its card, converts it to an \api{AIAgent}, and uses it as one
+participant in a handoff topology alongside local agents. The .NET side contains
+no Python-specific code and no HTTP client of yours. The Python side does not
+know its caller is .NET.
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Stand up the Python agent and confirm the card is reachable. Fetch it with
+      \code{curl} first --- if the card is wrong, everything downstream is
+      confusing.
+\item Resolve it from .NET and run it directly. One call, no orchestration.
+\item Put it in a handoff topology as a specialist. Give it a description, since
+      \S\ref{sec:orch-handoff} established that the description is the routing
+      table.
+\item Kill the Python process mid-conversation and observe what the .NET side
+      does. This is the part people skip and the part that matters.
+\end{enumerate}
+
+\begin{note}
+Step four is the one worth writing up. Cross-organisation delegation only earns
+its place if the failure behaviour is understood, and the honest finding is
+usually that the default behaviour is worse than you assumed.
+\end{note}
+
+There is also a UI protocol in the family --- an agent-to-UI streaming protocol
+with its own ASP.NET Core hosting package --- which serves the same purpose one
+layer up: a standard way for a front end to consume an agent's streamed output
+without a bespoke contract per application.
+
+% ============================================================
 \section{Foundry Hosted Agents}
+\label{sec:host-foundry}
+\index{hosting!Foundry}
+
+The managed option: the agent runs on Microsoft's infrastructure and you stop
+owning the process, the scaling and the sandbox.
+
+\begin{csharp}[caption={Hosting an agent as a Foundry responses endpoint}, label={lst:host-foundry}]
+builder.Services.AddFoundryResponses(agent);
+
+WebApplication app = builder.Build();
+
+app.MapFoundryResponses();
+\end{csharp}
+
 \subsection{Scale to zero, and resuming with the filesystem intact}
+
+The interesting property is that a hosted agent scales to zero between
+conversations and resumes with its filesystem still there. That is unusual.
+Ordinary serverless gives you a cold start and an empty disk; here, files written
+during a conversation are present when it resumes.
+
+This connects directly to Chapter~\ref{ch:workflows-advanced}. That chapter
+established that a file-system checkpoint store on a mounted volume is what makes
+a run survive its container --- and a hosting model that preserves the filesystem
+across scale-to-zero is the same guarantee, supplied by the platform. Hosted
+session storage follows the same shape, with a file-system-backed store in the
+box.
+
 \subsection{Per-session VM-isolated sandboxes}
+
+Each session gets its own VM-level isolation boundary. This is the feature that
+makes hosted agents interesting for anything executing code or running shell
+commands, and it is worth understanding what it buys: not that the agent cannot
+do damage, but that the damage is confined to one session's sandbox and cannot
+reach another user's.
+
+Chapter~\ref{ch:harness} returns to this, because a harness with a shell executor
+is exactly the workload that needs it.
+
 \subsection{Measuring cold start}
+\label{sec:host-coldstart}
 
+Chapter~\ref{ch:workflows-advanced} sent you here for a number, and said
+rehydration cost must be measured separately before the hosting claim can be
+judged. That is still the right framing, and the number is still not in this
+book.
+
+\begin{warning}
+\textbf{No cold-start measurement is reported here.} Like the benchmark in
+Chapter~\ref{ch:orchestration} \S\ref{sec:orch-benchmark}, this section specifies
+an experiment rather than reporting one. Anything else would be a number invented
+to fill a gap.
+\end{warning}
+
+The experiment, if you have a subscription:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Establish a warm baseline. Invoke repeatedly and take the median latency of
+      an already-running instance.
+\item Force scale to zero. Wait past the idle window --- confirm it actually
+      scaled down rather than assuming it did.
+\item Invoke once and measure end to end. Repeat at least twenty times, allowing
+      a full scale-down between each. Report the distribution, not the best run,
+      for the reasons \S\ref{sec:orch-benchmark} gave.
+\item Separate the two costs. A cold invocation of a workflow that rehydrates
+      from a checkpoint pays platform cold start \emph{and} rehydration.
+      Chapter~\ref{ch:workflows-advanced}'s exercise measures the second on its
+      own; subtract it, or you will attribute your own graph's cost to the
+      platform.
+\end{enumerate}
+
+Step four is the one that makes the result worth publishing. ``Cold start is $n$
+seconds'' is a platform claim that will be stale in a quarter. ``Of the $n$
+seconds, $x$ is platform and $y$ is our graph'' is a fact about your system that
+tells you which one to work on.
+
+% ============================================================
 \section{Security}
-% Sandboxing, shell execution risk, tool approval as a control,
-% prompt injection through tool results and MCP servers
+\label{sec:host-security}
+\index{security}
 
+Hosting is where the security properties stop being theoretical, because until
+now the only user was you. Four things, in rough order of how often they go
+wrong.
+
+\textbf{Session isolation.} Covered in \S\ref{sec:host-aspnet} and repeated here
+because it is the one with the worst consequences. An isolation key that is not
+unique per principal means users reading each other's conversations. Verify it
+with a test that authenticates as two principals and asserts that one cannot
+retrieve the other's session.
+
+\textbf{Prompt injection through tool results.} An agent that reads a web page, a
+document or an MCP server's response is reading text an attacker may control, and
+that text arrives in the same context as your instructions. There is no complete
+defence. What helps is limiting what a compromised turn can \emph{do}: fewer
+tools, narrower permissions, and approval gates on anything destructive. The
+function-level middleware in Chapter~\ref{ch:observability} \S\ref{sec:obs-middleware}
+is where that gate goes.
+
+\begin{warning}
+This is the strongest argument in the book for the tool-approval pattern from
+Chapter~\ref{ch:tools} \S\ref{sec:approvals}. Treat approval not as a UX feature
+for nervous users but as the control that bounds the blast radius of an
+injection you did not detect. It is the seam where a human decision interrupts a
+chain of model decisions, and it is the only such seam you have.
+\end{warning}
+
+\textbf{Shell and code execution.} Some workloads need it. If yours does, it
+belongs in a sandbox with an isolation boundary you can name --- which is what
+\S\ref{sec:host-foundry} buys, and what a container on your own infrastructure
+does not automatically give you. ``It runs as a low-privileged user'' is not an
+isolation boundary.
+
+\textbf{MCP servers are third-party code in your trust boundary.} An MCP server
+you did not write, reached over the network, supplying tool definitions and tool
+results to your agent, is a supply-chain dependency with a live channel into your
+model's context. Pin them, review them, and know what happens when one starts
+returning something new. Declarative workflows have handler hooks for exactly
+this purpose --- Chapter~\ref{ch:workflows-advanced} noted them as the sandboxing
+seam --- and they are worth using to enforce an allow-list.
+
+\begin{note}
+The uncomfortable summary is that agent security is mostly blast-radius
+management rather than prevention. You cannot reliably stop a model being
+manipulated by text it reads. You can decide, in advance and in code, what it is
+permitted to do afterwards --- and that decision is worth more design attention
+than any prompt hardening.
+\end{note}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:harness}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Host an agent with a real session store and prove isolation: authenticate
+      as two principals and confirm neither can reach the other's session. Write
+      it as a test, not as a manual check.
+\item Build the Aspire app host and confirm the traces from
+      Chapter~\ref{ch:observability} arrive with no exporter configuration.
+      Then run a workflow through it and find a dropped delivery in the
+      dashboard.
+\item Build the .NET-to-Python A2A example. Then kill the Python process
+      mid-conversation and write down exactly what the .NET side does.
+\item Run the cold-start experiment in \S\ref{sec:host-coldstart}, including
+      step four. Publish it --- nobody has.
+\item Take an agent with a destructive tool, put an approval gate in
+      function-level middleware, and then try to talk it into calling the tool
+      via a poisoned tool result. Note whether the gate was what stopped you.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+Hosting an agent is mostly a session problem. Agents register by name on the host
+builder, and that name is a stable public identifier rather than a variable. The
+in-memory session store is for development; anything else needs the store from
+Chapter~\ref{ch:memory} registered here.
+
+Session isolation is the part with the worst failure mode. The isolation key must
+uniquely identify the principal, the default is the stable subject identifier,
+and display names and email aliases are unsafe unless you can prove uniqueness.
+Test it with two principals rather than assuming it.
+
+Aspire describes the whole topology --- agent, database, front end --- in C\# and
+collects the telemetry from Chapter~\ref{ch:observability} with no exporter
+configuration. It is a development-time orchestrator, not a production runtime.
+
+Two things are called durability and they are different problems: workflow
+checkpointing makes the \emph{graph} durable, the durable extension makes the
+\emph{host} durable. They compose, and a long-running approval process wants
+both. Durable agent entities have a default time to live measured in days, so a
+conversation resumed too late comes back empty rather than failing.
+
+A2A turns a remote agent into an ordinary \api{AIAgent}, which means another
+team's agent can be a workflow node, a handoff target or a tool with no
+protocol-specific code on your side. The boundary is invisible at the type level
+and emphatically visible at run time, so wrap remote agents in timeouts.
+
+Foundry hosted agents scale to zero and resume with the filesystem intact, and
+give each session a VM-isolated sandbox. The cold-start number is not in this
+book, because it has not been measured; the experiment is specified, including
+the step that separates platform cost from your own rehydration cost.
+
+Security at this stage is blast-radius management, not prevention. You cannot
+reliably stop a model being manipulated by text it reads. Decide in code what it
+may do afterwards --- and that is what tool approval is for.
+
+Chapter~\ref{ch:harness} takes the sandbox seriously, because the next thing to
+host is an agent that runs commands.
