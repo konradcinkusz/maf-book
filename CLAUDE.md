@@ -10,28 +10,31 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1–10, **11** | **12 only** |
+| Chapters | **1–12, all drafted** | — |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 224 pages, zero unresolved references.
-Every unwritten chapter already exists as a stub with a section outline and
-compiles as part of the book, so the PDF is always whole.
+Build is clean: `latexmk -pdf main.tex`, 236 pages, zero unresolved references.
+
+**A full draft exists.** Every chapter and appendix is written. What remains is
+not drafting but the debt below — two unrun experiments, the screenshots, the
+verifyboxes, the version-bump pass, and one section only the author can finish.
 
 **Debt ledgers, reported by CI on every build:**
-- 25 screenshots outstanding (`make shots`)
-- 22 `verifybox` blocks
+- 27 screenshots outstanding (`make shots`)
+- 23 `verifybox` blocks
 - **Two unrun experiments, both fully specified, neither reporting results:**
   the orchestration benchmark (Ch. 7 §7.7, scored by Ch. 9 §9.5) and the
   cold-start measurement (Ch. 10 §10.5.3, owed to Ch. 6 §6.2). See item 7 below.
 - **Ch. 11 §11.6's conflict-of-interest disclosure needs the author's review** —
   written generically because only the author knows the specifics. See item 8.
+- **Item 4's version-bump pass is now the largest structural job left.**
 
-Overfull hboxes: **44**. Chapters 5, 6 and 10 added none (6 removed a
-pre-existing one); Chapters 7, 8, 9 and 11 added six between them, all under
-13 pt and all but one in Appendix D's manifest, which is smaller than the entries
-already there. Check any new chapter the same way: build once with the chapter
-stubbed out, once with it in, and diff the `Overfull` lists. Attributing boxes by
-reading `main.log` nesting does not work.
+Overfull hboxes: **46**. Chapters 5, 6 and 10 added none (6 removed a
+pre-existing one); Chapters 7, 8, 9, 11 and 12 added eight between them, all
+under 13 pt and all but one in Appendix D's manifest, which is smaller than the
+entries already there. Check any new chapter the same way: build once with the
+chapter stubbed out, once with it in, and diff the `Overfull` lists. Attributing
+boxes by reading `main.log` nesting does not work.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -622,54 +625,41 @@ guessing if you would rather not name it in print.
 
 ---
 
-## Remaining chapters
+## What is left
 
-Each stub already has `\section` headings. Expand, don't restructure, unless the
-verification pass says the structure is wrong.
+**All twelve chapters and four appendices are drafted.** There are no stubs. The
+remaining work is finishing, not writing, and it is in rough priority order:
 
-### Chapter 12 — Capstone
-No new API surface. One system using everything prior: ingest MAF GenAI traces,
-score workflow-run quality, compare orchestration topologies empirically, surface
-wasted turns. End with what v1 deliberately leaves out.
+1. **Run the two experiments** (items 7 and 7b). Both are fully specified and
+   report nothing. The cold-start one is cheaper — do it first. Until they run,
+   Appendix B stays empty and no comparative performance claim may be stated as
+   fact anywhere in the book.
+2. **The version-bump pass** (items 4, 5, 6). `\mafcore` is two trains stale,
+   Appendix A's table and package list are out of date, and Appendix A still
+   names the pre-Chapter-6 checkpoint types. This is one dedicated sweep, not a
+   side effect of another chapter.
+3. **Chapter 11 §11.6** (item 8) — only the author can finish it.
+4. **Screenshots and verifyboxes.** 27 and 23 respectively. Each verifybox is a
+   promise to a reader that something was not compiled; clearing one means
+   compiling the listing, not rereading it.
+5. **Appendix A's margin cleanup.** 58 overfull boxes, the worst in the book.
 
-**Owed from Chapter 8:** the trace-ingest half of the capstone depends on two
-things §8.4 established. Traces arrive under **two** activity source names, so
-the ingest must subscribe to both. And **executor spans are siblings joined by
-span links, not nested children** — so reconstructing a workflow run from a trace
-means walking links, not the parent-child tree. Any ingest written against the
-usual nesting assumption will produce a flat, causally meaningless view. §8.6's
-instrumented-vs-not table is the natural spec for what the capstone has to add.
+When revising a written chapter, the same rule applies as when drafting: verify
+against the upstream source before changing any API detail. Every chapter pass so
+far turned up something that contradicted the notes, including notes written
+during an earlier pass.
 
-**Owed from Chapter 9:** the "score workflow-run quality" half is already
-half-built — `run.EvaluateAsync(evaluator)` with `SubResults` gives per-agent
-breakdowns, and `LocalEvaluator` + `FunctionEvaluator.Create` cover the cheap
-tier. The capstone's contribution is therefore **not** a scorer; it is joining
-scores to traces, so a low score can be traced to the executor that caused it.
-§9.5 makes exactly that argument ("not 'group chat scored worse' but 'the critic
-contributed nothing in 8 of 20 runs'"), and §9.6's trend-over-time chart is the
-other thing no single gate catches — both are natural capstone features. Also
-reuse §9.4's trace-selection criteria for "surface wasted turns": the signals are
-the same ones (loop-cap hits, turn counts far above median, abandoned runs).
-
-**Owed from Chapter 11 — this is the capstone's actual spec.** §11.6 lists what
-the platform now does for free and what it does not, and the second list *is* the
-capstone: multi-user, audit trail, policy enforcement ("nobody in this
-organisation may turn the network on in a shell sandbox" — defaults are not
-policy), and the fleet-level questions that only appear at a hundred agents
-across forty people over a week: which cost the most, which fail most often,
-which are worth keeping. §11.6 explicitly names Chapter 12 as where that is
-built, and closes by saying the loop is free and the organisational layer is not.
-Chapter 12's "what v1 deliberately leaves out" should answer §11.6 directly.
-
----
-
-## After each chapter
+## After each pass
 
 1. `latexmk -pdf main.tex` — must be zero errors, zero unresolved refs
-2. `make shots` — confirm new screenshot requests are registered
-3. Update `docs/index.html`: flip that chapter's `class="todo"` to `class="done"`
-4. Update the Status table at the top of this file
+2. `make shots` — confirm screenshot requests are still registered
+3. Update the Status table and debt ledgers at the top of this file
+4. Check the overfull count by diffing against a build with the change reverted
 5. Tag if it is a meaningful milestone: `git tag -a v0.4.0 -m "Chapter 4"`
 
 Appendix B's measurement tables stay empty until the experiments are actually run.
 Do not fill them with plausible numbers.
+
+**Note on tagging:** `git push --tags` returns HTTP 403 through the sandbox's git
+proxy, so tags created in a Claude Code web session exist locally only and are
+lost when the container is reclaimed. Tag from a local clone instead.

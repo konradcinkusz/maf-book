@@ -5,18 +5,513 @@
 One system, no new API surface.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+This chapter builds nothing new. Every mechanism it uses has appeared already ---
+graphs from Chapter~\ref{ch:workflows-basics}, traces from
+Chapter~\ref{ch:observability}, scoring from Chapter~\ref{ch:evaluation}, hosting
+from Chapter~\ref{ch:hosting}. What it does is put them together into one system
+that answers a question none of them answers alone.
+
+That is the point of a capstone, and it is also the honest shape of most real
+work in this area. The interesting systems are not the ones using an API nobody
+else has found. They are the ones that connected things everybody had.
+
+\begin{verifybox}
+\textbf{This chapter is a design, not a shipped system.} The framework calls it
+composes are verified and were established in earlier chapters; the composition
+is the author's and has not been built as described. Read it as an architecture
+with worked reasoning, and expect the schema decisions in
+\S\ref{sec:cap-ingest} to be the ones you change first.
+\end{verifybox}
+
+% ============================================================
 \section{The problem}
-% Agent Framework instruments cost and latency. It does not instrument quality.
+\label{sec:cap-problem}
 
+Chapter~\ref{ch:observability} \S\ref{sec:obs-gap} put it in one line: the
+framework instruments mechanism thoroughly and quality not at all, so a green
+dashboard is compatible with an agent failing every user.
+
+Chapter~\ref{ch:evaluation} closed half of that. You can score an agent, and you
+can score a workflow run with a per-agent breakdown. But scoring happens in a
+harness you run deliberately, against inputs you chose. It is a laboratory
+instrument.
+
+The gap that remains is the one between the two. Your traces know what happened
+in production and not whether it was good. Your evaluations know what good looks
+like and only for inputs you thought of. Nothing joins them --- and the questions
+people actually ask live exactly in that join:
+
+\begin{itemize}[leftmargin=1.4em]
+\item This run scored badly. \emph{Which executor caused it?}
+\item Group chat costs more than sequential here. \emph{Is it buying anything?}
+\item We spend a lot of tokens on Tuesdays. \emph{On what?}
+\item Quality has drifted down over six weeks. \emph{Starting when, and after
+      what?}
+\end{itemize}
+
+None of those is answerable from traces alone or from scores alone. All of them
+are answerable from traces \emph{with} scores attached. That join is the system.
+
+\begin{note}
+Chapter~\ref{ch:harness} \S\ref{sec:harness-tooling} arrived at the same place
+from the other direction: the agent loop is now a free platform feature, and what
+is not free is everything organisational. This chapter builds a piece of that
+--- deliberately the piece that is useful at ten agents and indispensable at a
+hundred.
+\end{note}
+
+% ============================================================
 \section{Architecture}
-% Trace ingestion -> scoring -> comparison across topologies -> surfacing waste
+\label{sec:cap-architecture}
 
+Four stages, and the discipline is that each is independently useful. A system
+where stage four is the only thing that pays is a system that never ships.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Stage} & \textbf{Does} \\
+\midrule
+Ingest & Receives OTLP spans, reconstructs runs, stores them \\[4pt]
+Score & Replays stored runs through evaluators, attaches scores \\[4pt]
+Compare & Aggregates scored runs by topology, model, version \\[4pt]
+Surface & Finds runs worth a human's attention \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Two decisions are worth making early because they are expensive to reverse.
+
+\textbf{Store runs, not spans.} A span store is a tracing backend and you already
+have one. What you need is a \emph{run} --- a reconstructed, queryable object with
+its executors, turns, tokens and outcome --- because every question in
+\S\ref{sec:cap-problem} is about runs. Reconstruct on ingest and store the
+result.
+
+\textbf{Score out of band.} Scoring is slow, costs model calls, and its
+definition changes. If it happens on the ingest path, a scorer change means
+re-ingesting and a scorer outage means losing data. Ingest fast, score later,
+and keep enough of the run that re-scoring never needs the original traffic.
+
+\needdiagram{capstone-architecture}{The four stages, and what crosses between
+them}{A left-to-right pipeline: OTLP collector feeding an ingest service; ingest
+writing reconstructed runs to a store; a separate scoring worker reading runs and
+writing scores back against the same run identifiers; and a query layer over both
+serving the comparison and waste views. Draw the scoring worker clearly off the
+ingest path, with its own queue, because that separation is the architectural
+point.}
+
+% ============================================================
 \section{Ingesting GenAI traces}
-\section{Scoring a workflow run}
-\section{Comparing topologies empirically}
-\section{Surfacing wasted turns}
-\section{Deploying it}
-\section{What v1 deliberately leaves out}
+\label{sec:cap-ingest}
 
+This is the stage with the real engineering, and the one where earlier chapters
+save you the most time --- because two facts from \S\ref{sec:obs-reading} would
+otherwise cost you a rewrite.
+
+\subsection{Subscribe to both sources}
+
+Agents and workflows emit under two different activity source names. An ingest
+that subscribes to one produces traces with a hole in them and no error to say
+so. Chapter~\ref{ch:observability} gave both names; the collector configuration
+must carry both, and this is worth an assertion at startup rather than a comment.
+
+\subsection{Walk links, not parents}
+
+Here is the fact that determines your schema. \textbf{Executor spans are
+siblings, not children.} Causality between executors is carried by span
+\emph{links}, created by propagating W3C trace context from the sending executor
+and attaching a link on the receiving one.
+
+So reconstructing a run means walking the link graph. An ingest written against
+the usual parent-child assumption --- the assumption every trace-processing
+tutorial makes --- produces a flat list of executor spans in arbitrary order,
+with the causal structure silently discarded. It will look like it works.
+
+\begin{warning}
+This is the single most expensive mistake available in this chapter, because the
+result is not an error but a plausible-looking view that is wrong. You will
+discover it when a fan-out renders as a sequence and nobody can explain why the
+order changes between runs.
+
+Test it on a workflow with a fan-out and a fan-in, where the correct answer is
+known and visibly different from the flat one.
+\end{warning}
+
+\subsection{What a run is}
+
+The reconstruction produces one object per run. The fields worth having, and
+where each comes from:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Field} & \textbf{Source} \\
+\midrule
+Run and session identity & Workflow session span tags \\[4pt]
+Topology & Workflow name and definition tag \\[4pt]
+Executors & Executor spans, ordered by the link graph \\[4pt]
+Turn count & Count of executor invocations \\[4pt]
+Tokens & Usage content, summed, input and output separately \\[4pt]
+Latency & Session span duration \\[4pt]
+Dropped deliveries & Edge spans where delivery did not happen \\[4pt]
+Outcome & Whether a workflow output span appeared \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Capture dropped deliveries during ingest even though nothing downstream uses
+them yet. They are nearly free to record, they are the signal from
+\S\ref{sec:obs-dropped} that a graph is silently broken, and a fleet-wide count
+of silent drops per topology is a genuinely novel number that nobody currently
+has. It is the kind of thing that is trivial to record now and impossible to
+recover later.
+\end{note}
+
+\subsection{Sampling and retention}
+
+Two things to decide before this is running rather than after.
+
+Chapter~\ref{ch:observability} argued against sampling agent runs at HTTP rates
+--- runs are low-volume and expensive, and the rare failing one is the only
+interesting one. Keep every run's reconstruction. What you can sample is the
+detail: full message content is large, sensitive, and needed only for the runs
+you will look at.
+
+Which raises the same warning as \S\ref{sec:eval-set}, one layer up. This system
+is a durable store of production conversation content, assembled by you, sitting
+outside your application's normal data governance. Give it a retention policy and
+an access model on the day it is built, not when someone asks.
+
+% ============================================================
+\section{Scoring a workflow run}
+\label{sec:cap-scoring}
+
+The scorer is not the contribution here, and it is worth being clear about that
+because it is where the temptation to over-build lives.
+Chapter~\ref{ch:evaluation} established that scoring exists in the box: local
+deterministic checks, judge-model evaluators, and a per-agent breakdown on
+workflow runs.
+
+The contribution is the \emph{join}. A score attached to a run whose executor
+structure you reconstructed is a score you can attribute.
+
+\begin{csharp}[caption={Scoring stored runs, out of band}, label={lst:cap-score}]
+await foreach (StoredRun run in this._runs.UnscoredAsync(cancellationToken))
+{
+    AgentEvaluationResults results = await this._evaluator.EvaluateAsync(
+        run.ToEvalItems(), evalName: run.Topology, cancellationToken);
+
+    await this._scores.WriteAsync(new RunScore(
+        RunId:      run.Id,
+        Overall:    results.Passed / (double)results.Total,
+        PerAgent:   results.SubResults?.ToDictionary(
+                        kv => kv.Key,
+                        kv => kv.Value.Passed / (double)kv.Value.Total),
+        ScorerName: this._evaluator.Name,
+        ScorerVersion: ScorerVersion), cancellationToken);
+}
+\end{csharp}
+
+Two details in that listing matter more than they look.
+
+\textbf{The per-agent dictionary is the whole point.} An overall score tells you a
+run was bad. The breakdown tells you which participant was responsible, and
+because the run object knows the executor structure, that participant can be
+located in the graph.
+
+\textbf{Scores are versioned by scorer.} Scorer definitions change --- a new
+check, a different judge model --- and a score computed under one definition is
+not comparable with a score computed under another. Store the version alongside
+the score and never mix them in a chart. This is the same discipline
+\S\ref{sec:eval-ci} demanded of gate thresholds, and forgetting it produces trend
+lines with step changes that look like quality events and are measurement events.
+
+\begin{note}
+Start with the cheap tier only. A scoring worker running local checks over every
+stored run costs nothing per run and will already answer most of
+\S\ref{sec:cap-problem}. Add the judge tier for a sample once the pipeline is
+proven, not before --- an unproven pipeline that also has a model bill is a
+project that gets cancelled.
+\end{note}
+
+% ============================================================
+\section{Comparing topologies empirically}
+\label{sec:cap-compare}
+
+With scored runs in a store, the comparison Chapter~\ref{ch:orchestration}
+specified stops being a one-off study and becomes a standing query.
+
+That is a bigger difference than it sounds. \S\ref{sec:orch-benchmark}'s
+benchmark is a controlled experiment: one fixed task, everything held constant,
+twenty runs per pattern. Valuable, and expensive, and out of date the moment a
+model changes. This system computes the same comparison continuously over real
+traffic --- which is uncontrolled, and therefore answers a different and
+complementary question.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}XX@{}}
+\toprule
+\textbf{The benchmark answers} & \textbf{This answers} \\
+\midrule
+Which pattern is better on this task, all else equal & Which pattern is better
+on the work we actually get \\[4pt]
+Under controlled conditions & Under production conditions, including the inputs
+nobody designed for \\[4pt]
+Once, expensively & Continuously, as a by-product \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warning}
+Production comparison is confounded and the benchmark is not. If handoff handles
+your hard tickets and sequential handles the easy ones, handoff will score worse
+and be doing better work. Never read this view as a clean comparison --- it is
+observational data, and the difference between topologies is entangled with the
+difference between the work they were given.
+
+Segment by task type before drawing any conclusion, and if you cannot segment,
+say so on the chart rather than in a footnote nobody reads.
+\end{warning}
+
+The report worth building first is per topology: run count, median and spread of
+turns, tokens and latency, success rate, and the per-agent score breakdown
+averaged across runs. Medians and spreads rather than means, for the reasons
+\S\ref{sec:orch-benchmark} gave --- a topology with a good median and a bad tail
+is a topology that fails expensively and rarely, which is exactly what an
+average hides.
+
+\needscreenshot{capstone-topology-comparison}{Which topology, and why}{The
+capstone's comparison view: several orchestration topologies as rows, with run
+count, median turns, median tokens, median latency and success rate as columns,
+and one row expanded to show the per-agent score breakdown underneath it. The
+expanded row is the important part --- the reader must be able to see an
+individual participant's contribution, not just the topology aggregate. Browser
+only.}
+
+% ============================================================
+\section{Surfacing wasted turns}
+\label{sec:cap-waste}
+
+The most immediately useful view, and the cheapest to build, because the signals
+were already enumerated in \S\ref{sec:eval-set} for a different purpose. The
+criteria that select good evaluation items are the criteria that select wasteful
+runs --- which is not a coincidence, since both are looking for where the system
+behaved unusually.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Signal} & \textbf{Usually means} \\
+\midrule
+Turns far above median for its topology & A loop that did not converge \\[4pt]
+Iteration or loop cap hit & Termination by timeout, not by completion \\[4pt]
+High tokens, low score & Expensive failure --- the worst quadrant \\[4pt]
+An agent that spoke and changed nothing & A participant earning nothing \\[4pt]
+Dropped deliveries present & A silently broken graph \\[4pt]
+Abandoned before output & A user who gave up \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+The fourth row is the one worth the effort. Chapter~\ref{ch:orchestration} raised
+the case of the group-chat critic that contributes nothing --- and with per-agent
+scores joined to run structure, that stops being an anecdote and becomes a
+query: participants whose presence does not move the run's score, ranked by what
+they cost. That number pays for the system on its own.
+\end{note}
+
+Rank by cost, not by count. A hundred slightly-wasteful runs matter less than
+three runs that each burned a hundred thousand tokens arriving nowhere, and a
+list sorted by frequency will show you the hundred.
+
+\needscreenshot{capstone-wasted-turns}{Where the money went}{The waste view: runs
+ranked by wasted cost, each row showing the topology, turn count against the
+median for that topology, token cost, score, and the reason it was flagged. At
+least one row expanded to show the run's executor sequence, with the point at
+which it stopped making progress visible. Browser only.}
+
+% ============================================================
+\section{Deploying it}
+\label{sec:cap-deploy}
+
+Nothing here is new either, which is the point of having read
+Chapter~\ref{ch:hosting}.
+
+The ingest is an ASP.NET Core service behind an OTLP endpoint. The scoring worker
+is a background service reading a queue. Both need a database; runs and scores
+are ordinary relational data and deserve no cleverness. Aspire wires the four
+together locally, as in \S\ref{sec:host-aspire}.
+
+Two properties deserve deliberate design.
+
+\textbf{The ingest must not lose data when the scorer is down,} which is why the
+stages are separate. Ingest writes runs; scoring is a queue consumer. A scorer
+outage becomes a backlog, not a hole.
+
+\textbf{Re-scoring must be cheap,} because scorer definitions change more often
+than anything else in the system. If re-scoring the last ninety days requires
+re-ingesting, the pipeline is wrong --- the stored run must contain everything a
+scorer needs.
+
+\begin{warning}
+This system holds production conversation content for every run, and its whole
+value is being easy to query. That combination is exactly what a data protection
+review exists to catch, and it is better to meet that review with a retention
+policy and an access model already in place than to meet it with a demo.
+
+Apply Chapter~\ref{ch:hosting} \S\ref{sec:host-aspnet}'s isolation reasoning
+here too: the people who may read this system's contents are not necessarily
+everyone who can reach its URL.
+\end{warning}
+
+% ============================================================
+\section{What v1 deliberately leaves out}
+\label{sec:cap-omissions}
+
+Chapter~\ref{ch:harness} \S\ref{sec:harness-tooling} listed what the platform
+does not give you and named this chapter as where it gets built. This section is
+the honest accounting of how much of that list v1 actually addresses, which is
+less than half.
+
+\textbf{Built:} the fleet-level questions. Which topologies cost the most, which
+fail most often, which participants earn nothing, where the waste is. That is the
+part that only appears at a hundred agents across forty people, and it is the
+part that was genuinely missing.
+
+\textbf{Not built, and deliberately:}
+
+\emph{Multi-user.} v1 assumes one team looking at their own agents. Tenancy,
+per-team visibility and role-based access are real work and orthogonal to whether
+the join is useful. Prove the join first.
+
+\emph{An audit trail.} Recording what happened is not the same as producing
+evidence a compliance reviewer will accept, which needs tamper-evidence, defined
+retention and provenance for every score. That is a different product with a
+different bar.
+
+\emph{Policy enforcement.} This is the significant omission and it deserves
+naming clearly. Chapter~\ref{ch:harness} observed that the framework gives good
+defaults and a switch for each --- and that \emph{defaults are not policy}. There
+is no way to say ``nobody in this organisation may turn the network on in a
+shell sandbox'' and have that hold.
+
+This system cannot fix that, because it observes rather than intercepts. It could
+tell you the rule was broken after the fact, which is worth something and is not
+enforcement. Real enforcement lives in the pipeline that builds the agent, not in
+the system that watches it run --- and that is unsolved, genuinely valuable, and
+the thing to build next.
+
+\emph{Automated action.} v1 shows you the waste. It does not reroute traffic to a
+cheaper topology or disable a participant that earns nothing. Acting on these
+signals automatically requires confidence in them that nobody has yet, and the
+right sequence is to measure for a quarter, check the recommendations against
+judgement, and only then let it act.
+
+\begin{note}
+That last one is the discipline this whole book has been arguing for, applied to
+itself. A system that acts on a measurement it has not validated is exactly the
+green dashboard from \S\ref{sec:obs-gap}, one level up: confident, automated, and
+wrong in a way nothing will report.
+\end{note}
+
+% ============================================================
 \section{Where to go next}
+\label{sec:cap-next}
+
+Two things this book owes and does not have, both stated plainly where they
+belong and both worth more than another chapter of prose.
+
+\textbf{The orchestration benchmark has not been run.}
+\S\ref{sec:orch-benchmark} specifies it completely and reports nothing;
+Appendix~\ref{app:providers}'s tables are empty and were kept empty. It needs a
+budget and a few hours, not more research, and nobody has published it well for
+1.0. Keep the raw event streams --- \S\ref{sec:cap-scoring} is the reason.
+
+\textbf{The cold-start measurement has not been run either.}
+\S\ref{sec:host-coldstart} specifies it, including the step that separates
+platform cost from your own rehydration cost, which is the step that makes the
+result worth publishing rather than restating a vendor's number.
+
+Beyond those: policy enforcement in the build pipeline, from
+\S\ref{sec:cap-omissions}. It is the clearest unsolved problem this book has
+found, and unlike the two measurements it is not a matter of budget.
+
+\subsection{A closing note on what changes}
+
+Much of the API surface in this book will move. Names have already changed once
+during its writing --- Chapter~\ref{ch:first-agent}'s vocabulary is not what the
+early previews used --- and one activity source is still marked experimental.
+Treat specific signatures as perishable and check them against the source, which
+remains more authoritative than any documentation including this.
+
+What will not move is the reasoning. That a superstep boundary is the only
+consistent point to checkpoint. That a type mismatch on an edge is a silent drop
+and needs a query rather than a debugger. That the topology is yours and the
+routing is the model's. That a green dashboard is compatible with an agent
+failing every user. That measurement beats assertion, and that a crude stable
+scorer beats a sophisticated unstable one.
+
+Those are properties of the problem, not of this framework. They will still be
+true when the names have changed again.
+
+\begin{exercisebox}
+The last one:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Build the ingest for one workflow. Confirm the fan-out renders as a
+      fan-out. If it renders as a sequence, you walked parents.
+\item Add the cheap scorer only, over stored runs. Resist the judge for a
+      fortnight.
+\item Compute the waste view. Find the most expensive pointless run in your own
+      system. There is one.
+\item Answer the participant question: is there an agent in your topology whose
+      presence does not move the score? Cost it.
+\item Run the benchmark in \S\ref{sec:orch-benchmark} and publish it. Of
+      everything in this book, that is the piece the ecosystem is missing.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
+\section{Summary}
+
+The capstone introduces no API. It joins two things the framework keeps apart:
+traces, which know what happened and not whether it was good, and evaluation,
+which knows what good looks like but only for inputs you chose. The join is where
+every useful question lives.
+
+Four stages, each independently useful: ingest reconstructs runs from spans,
+scoring runs out of band over stored runs, comparison aggregates by topology, and
+the waste view surfaces what deserves attention. Store runs rather than spans ---
+you already have a span store --- and keep scoring off the ingest path so a
+scorer change is a re-score rather than a re-ingest.
+
+Ingest must subscribe to both activity sources and must walk span links rather
+than parent-child nesting, because executor spans are siblings. The parent-child
+version produces a plausible view that is wrong, which is worse than one that
+fails.
+
+The scorer is not the contribution; the attribution is. Per-agent breakdowns
+joined to reconstructed run structure turn ``this run scored badly'' into ``this
+participant caused it'', and version every score by the scorer that produced it
+or your trend lines will show measurement changes as quality events.
+
+Production comparison across topologies is confounded in a way the
+Chapter~\ref{ch:orchestration} benchmark is not, and the two are complementary
+rather than substitutes. Segment before concluding.
+
+What v1 leaves out is most of the organisational layer: multi-user, audit, and
+above all policy enforcement --- because this system observes rather than
+intercepts, and telling you a rule was broken is not enforcing it. That gap is
+the clearest unsolved problem in this book.
+
+And the two measurements this book specifies and does not report are still
+waiting. They are the most valuable thing left to do.
