@@ -10,25 +10,26 @@ Read this before touching a chapter.
 | | Done | Remaining |
 |---|---|---|
 | Front matter | Title page, Introduction | — |
-| Chapters | 1, 2, 3, 4, 5, 6, 7, **8** | 9, 10, 11, 12 |
+| Chapters | 1, 2, 3, 4, 5, 6, 7, 8, **9** | 10, 11, 12 |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 192 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 202 pages, zero unresolved references.
 Every unwritten chapter already exists as a stub with a section outline and
 compiles as part of the book, so the PDF is always whole.
 
 **Debt ledgers, reported by CI on every build:**
-- 21 screenshots outstanding (`make shots`)
-- 18 `verifybox` blocks
+- 23 screenshots outstanding (`make shots`)
+- 19 `verifybox` blocks
 - **Appendix B's benchmark tables are still empty** — Chapter 7 specifies the
-  experiment and deliberately reports no results. See item 7 below.
+  experiment and Chapter 9 §9.5 adds the scoring harness, but neither reports
+  results because the runs have not happened. See item 7 below.
 
-Overfull hboxes: **41**. Chapters 5 and 6 added none (6 removed a pre-existing
-one); Chapters 7 and 8 added three between them, all in Appendix D's manifest and
-all under 6 pt, which is smaller than the entries already there. Check any new
-chapter the same way: build once with the chapter stubbed out, once with it in,
-and diff the `Overfull` lists. Attributing boxes by reading `main.log` nesting
-does not work.
+Overfull hboxes: **42**. Chapters 5 and 6 added none (6 removed a pre-existing
+one); Chapters 7, 8 and 9 added four between them, all in Appendix D's manifest
+and all under 13 pt, which is smaller than the entries already there. Check any
+new chapter the same way: build once with the chapter stubbed out, once with it
+in, and diff the `Overfull` lists. Attributing boxes by reading `main.log`
+nesting does not work.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -383,6 +384,66 @@ exposed.
 
 ---
 
+## Evaluation API — RESOLVED (Chapter 9 pass, July 2026)
+
+Verified against `Microsoft.Agents.AI/Evaluation/`,
+`Microsoft.Agents.AI.Workflows/Evaluation/`,
+`Microsoft.Agents.AI.Foundry/Evaluation/`, and the evaluation samples under
+`samples/02-agents/`, `samples/03-workflows/` and `samples/05-end-to-end/`.
+
+**The brief was wrong about where evaluation lives.** It is NOT mainly
+`Microsoft.Extensions.AI.Evaluation`. The **core** package owns the abstraction:
+`IAgentEvaluator` (batch: items in, `AgentEvaluationResults` out) plus
+`AgentEvaluationExtensions.EvaluateAsync` on `AIAgent`. MEAI is adapted in via an
+internal `MeaiEvaluatorAdapter`. §9.2 is written this way; the stub's heading
+"Microsoft.Extensions.AI.Evaluation" was renamed to "The evaluation surface".
+
+**Three implementations of one interface, forming a cost ladder:**
+
+| Tier | Type | Cost |
+|---|---|---|
+| Local checks | `LocalEvaluator(params EvalCheck[])` | free, deterministic |
+| Judge model | MEAI `IEvaluator` + `ChatConfiguration` | model calls |
+| Hosted | `FoundryEvals : IAgentEvaluator` | server-side job + report URL |
+
+**`EvalCheck` is just `delegate EvalCheckResult EvalCheck(EvalItem item)`.** Custom
+checks are one-liners via `FunctionEvaluator.Create(name, (string response) => bool)`.
+In-box: `KeywordCheck`, `NonEmpty`, `ContainsExpected`, `ToolCalledCheck`
+(with `ToolCalledMode`), `ToolCallsPresent`, `ToolCallArgsMatch`, `HasImageContent`.
+The upstream `CustomEvals` sample's first example is literally refusal detection —
+the same thing Chapter 8 §8.7 recommends writing by hand.
+
+**`numRepetitions` is a first-class parameter on `EvaluateAsync`** — runs each
+query N times independently to measure consistency. This is Chapter 7 §7.7's
+"distributions not best runs" discipline, built into the API. §9.2 and §9.6 both
+lean on it.
+
+**Results carry assertion methods for test frameworks:** `AssertAllPassed`,
+`AssertNoFailedItems`, `AssertScoreAtLeast`, `AssertDimensionScoreAtLeast`. That
+is the CI-gate story and it is in-box — §9.6 argues the mechanism was never the
+problem, flakiness is.
+
+**Workflow runs evaluate with a per-agent breakdown.** `run.EvaluateAsync(evaluator,
+includeOverall, includePerAgent, ...)` → `AgentEvaluationResults.SubResults` keyed
+by agent name. This is what makes the Chapter 7 comparison actionable: not "group
+chat scored worse" but "the critic contributed nothing in 8 of 20 runs".
+
+**`IConversationSplitter`** with `ConversationSplitters.LastTurn` / `.Full`
+controls what counts as query vs response; `EvalItem.PerTurnItems` splits a
+conversation into per-turn items.
+
+**The Foundry catalogue directly scores what Chapter 8 §8.6 listed as
+uninstrumented.** Constants on `FoundryEvals`: agent behaviour
+(`intent_resolution`, `task_adherence`, `task_completion`,
+`task_navigation_efficiency`); tool use (`tool_call_accuracy`, `tool_selection`,
+`tool_input_accuracy`, `tool_output_utilization`, `tool_call_success`); quality
+(`coherence`, `fluency`, `relevance`, `groundedness`, `response_completeness`,
+`similarity`); safety (`violence`, `sexual`, `self_harm`). Evaluators are named by
+**string**, so the set can grow without a package update and a name can silently
+stop being recognised — §9.3 has a versionbox on pinning them.
+
+---
+
 ## Open questions — NEW, unresolved
 
 **4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
@@ -440,37 +501,6 @@ stated as fact. Chapter 7 labels all of its as judgement; keep that discipline.
 
 Each stub already has `\section` headings. Expand, don't restructure, unless the
 verification pass says the structure is wrong.
-
-### Chapter 9 — Evaluation
-**Angle:** how you find out yesterday's prompt change made things worse.
-
-**Verify:** `Microsoft.Extensions.AI.Evaluation` API; Foundry evaluations. Note
-there is now a `Microsoft.Agents.AI/Evaluation/` folder in the core package —
-check what is in it before assuming evaluation lives entirely in the extensions.
-
-**Reuse:** run the Chapter 7 benchmark under a scoring harness. Cover building an
-evaluation set from production traces, and where regression gates belong in CI —
-including the flakiness problem, which is the reason most teams abandon them.
-
-**Owed from Chapter 7:** §7.7 states plainly that its binary correctness score is
-not a quality measure, and names this chapter as the place that gap gets closed.
-It also tells the reader to keep the raw event streams for exactly this purpose.
-There is a `Microsoft.Agents.AI.Workflows/Evaluation/` folder as well as the core
-package one — check both. Note also that §7.7's "report distributions, not best
-runs" discipline is the same problem as evaluation flakiness, one chapter early;
-the two sections should agree with each other.
-
-**Owed from Chapter 8:** §8.6 is the gap statement this chapter closes — the
-framework instruments mechanism (tokens, latency, which executor ran) and not
-quality, so "a green dashboard is compatible with an agent failing every user".
-§8.7 builds the cheap first version: a scorer in agent middleware writing
-`quality.score` / `quality.scorer` / `quality.refused` as span tags. This chapter
-should pick that up and say plainly where the span-tag approach stops being
-enough. §8.7 also splits scorers into cheap non-model ones (refusal detection,
-truncation, tool-result citation, loop-cap hits) and expensive model-graded ones,
-and recommends the latter out of band on a sample — keep that line consistent.
-
----
 
 ### Chapter 10 — Hosting, Durability and A2A
 **Already verified:** `Microsoft.Agents.AI.DurableTask`;
@@ -534,6 +564,17 @@ span links, not nested children** — so reconstructing a workflow run from a tr
 means walking links, not the parent-child tree. Any ingest written against the
 usual nesting assumption will produce a flat, causally meaningless view. §8.6's
 instrumented-vs-not table is the natural spec for what the capstone has to add.
+
+**Owed from Chapter 9:** the "score workflow-run quality" half is already
+half-built — `run.EvaluateAsync(evaluator)` with `SubResults` gives per-agent
+breakdowns, and `LocalEvaluator` + `FunctionEvaluator.Create` cover the cheap
+tier. The capstone's contribution is therefore **not** a scorer; it is joining
+scores to traces, so a low score can be traced to the executor that caused it.
+§9.5 makes exactly that argument ("not 'group chat scored worse' but 'the critic
+contributed nothing in 8 of 20 runs'"), and §9.6's trend-over-time chart is the
+other thing no single gate catches — both are natural capstone features. Also
+reuse §9.4's trace-selection criteria for "surface wasted turns": the signals are
+the same ones (loop-cap hits, turn counts far above median, abandoned runs).
 
 ---
 

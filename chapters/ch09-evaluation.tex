@@ -5,19 +5,544 @@
 How you find out that yesterday's prompt change made things worse.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
-\section{What "correct" means for a non-deterministic system}
+\noindent
+Chapter~\ref{ch:observability} ended on a gap. The framework instruments
+mechanism thoroughly --- tokens, latency, which executor ran, which tool was
+called --- and quality not at all, with the consequence that a green dashboard is
+compatible with an agent failing every user. This chapter closes that gap.
 
-\section{Microsoft.Extensions.AI.Evaluation}
+It is also the chapter that makes the rest of the book maintainable. Everything
+built so far can be changed by editing a string. A prompt is not type-checked, not
+covered by a unit test, and not reviewable in any meaningful sense --- you cannot
+look at a diff of an instruction and know whether it made the system better. The
+only way to know is to measure, and the only way to keep knowing is to measure
+automatically.
 
+\begin{verifybox}
+Derived from the \code{Evaluation/} folder of \pkg{Microsoft.Agents.AI}, the
+workflow evaluation extension in \pkg{Microsoft.Agents.AI.Workflows}, the Foundry
+evaluator catalogue, and the evaluation samples upstream. Type and member names
+are reliable. The CI configuration in \S\ref{sec:eval-ci} and the trace-mining
+code in \S\ref{sec:eval-set} are the author's own and have not been run.
+\end{verifybox}
+
+% ============================================================
+\section{What ``correct'' means for a non-deterministic system}
+\label{sec:eval-correct}
+\index{evaluation!determinism}
+
+Start with the thing that makes this hard, because every practice in this chapter
+follows from it.
+
+Run the same input through the same agent twice and you may get two different
+outputs. Both may be good. One may be good and one may be terrible. So the unit
+test contract --- given this input, assert this output --- does not apply, and
+teams that try to force it end up with either a test suite asserting on exact
+strings that breaks on every model update, or no tests at all. The second is more
+common.
+
+What replaces it is a shift in three directions at once.
+
+\textbf{From assertion to scoring.} Not ``is the output equal to this'' but ``how
+does this output score against these criteria''. The result is a number or a set
+of booleans, not a pass.
+
+\textbf{From one run to many.} A single run tells you almost nothing, because you
+cannot tell a systematic change from a sample of one. This is the same discipline
+Chapter~\ref{ch:orchestration} \S\ref{sec:orch-benchmark} imposed on the
+benchmark, and it is not a coincidence --- \emph{measuring an agent and
+benchmarking an agent are the same statistical problem}.
+
+\textbf{From absolute to relative.} ``Is this agent good'' is nearly unanswerable.
+``Is this agent better than the one we shipped last week'' is answerable, useful,
+and the question you actually have.
+
+\begin{note}
+That third shift is the one that makes evaluation practical rather than a
+research project. You do not need a scoring system that is correct in an absolute
+sense. You need one that is \emph{consistent}, so that a change in the score
+means a change in the system. A crude but stable scorer beats a sophisticated
+unstable one, every time, and it is available today.
+\end{note}
+
+\subsection{Ground truth, where you can get it}
+
+Some things do have a right answer: a classification, an extracted field, a tool
+that should have been called. Where ground truth exists, use it --- it is cheaper
+and more reliable than anything else in this chapter.
+
+The framework supports this directly. An evaluation item carries an optional
+expected output and an optional list of expected tool calls, and reference-based
+scorers compare against them. Building a set of a hundred inputs with known
+answers is dull work that pays for itself the first time it catches a regression.
+
+The mistake is assuming that because \emph{some} of your system has ground truth,
+you can skip evaluating the rest. The parts with no right answer are usually the
+parts users notice.
+
+% ============================================================
+\section{The evaluation surface}
+\label{sec:eval-surface}
+\index{evaluation!API}
+
+It is natural to assume that evaluation lives entirely in the extensions
+library. It does not, quite. The core agent package owns the abstraction, and
+\pkg{Microsoft.Extensions.AI.Evaluation} is one of three things that plug into
+it. Knowing that saves you looking in the wrong package for the entry point.
+
+The centre of it is a single interface --- a batch evaluator that takes items and
+returns results --- and a set of extension methods that run an agent against
+queries and evaluate the results in one call:
+
+\begin{csharp}[caption={Run and evaluate, in one call}, label={lst:eval-basic}]
+AgentEvaluationResults results = await agent.EvaluateAsync(queries, evaluator);
+
+Console.WriteLine($"Passed: {results.Passed}/{results.Total}");
+\end{csharp}
+
+The same shape works for a completed workflow run, with per-agent breakdown,
+which \S\ref{sec:eval-orchestration} uses.
+
+Three implementations of that interface exist, and they form a cost ladder. Pick
+deliberately --- the whole art of this chapter is spending model calls only where
+cheaper checks cannot reach.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Tier} & \textbf{What it is} \\
+\midrule
+Local checks & Deterministic functions over the response. No model, no network \\[4pt]
+Judge model & An extensions-library evaluator, scored by a model you configure \\[4pt]
+Foundry & Hosted evaluators run server-side, with a report \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Local checks: the tier to start with}
+
+A check is a delegate from an evaluation item to a result. That is the whole
+abstraction, and it means a custom check is a lambda:
+
+\begin{csharp}[caption={Custom checks, no model required}, label={lst:eval-local}]
+EvalCheck noRefusal = FunctionEvaluator.Create("no_refusal", (string response) =>
+    !response.Contains("I can't help", StringComparison.OrdinalIgnoreCase)
+    && !response.Contains("outside my scope", StringComparison.OrdinalIgnoreCase));
+
+EvalCheck hasSteps = FunctionEvaluator.Create("has_actionable_steps", (string response) =>
+    response.Contains("1.", StringComparison.Ordinal)
+    || response.Contains("- ", StringComparison.Ordinal));
+
+LocalEvaluator evaluator = new(noRefusal, hasSteps, EvalChecks.NonEmpty(50));
+
+AgentEvaluationResults results = await agent.EvaluateAsync(queries, evaluator);
+\end{csharp}
+
+Note what the first of those is. It is the refusal detector
+Chapter~\ref{ch:observability} \S\ref{sec:obs-scoring} recommended writing by
+hand --- and here it is a two-line lambda, with the framework doing the running
+and aggregation. Several more come in the box:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Check} & \textbf{Asserts} \\
+\midrule
+\code{KeywordCheck} & Required keywords appear in the response \\
+\code{NonEmpty} & The response is at least a given length \\
+\code{ContainsExpected} & The response contains the expected output \\
+\code{ToolCalledCheck} & Named tools were called \\
+\code{ToolCallsPresent} & Some tool was called at all \\
+\code{ToolCallArgsMatch} & Tool arguments match what was expected \\
+\code{HasImageContent} & The response includes image content \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+\textbf{The tool checks are the underrated ones.} A large share of real agent
+failures are not bad prose --- they are the agent not calling the tool it should
+have, calling the wrong one, or calling the right one with wrong arguments. All
+three are detectable without a model, deterministically, in milliseconds. Build
+this tier before you consider a judge.
+\end{note}
+
+\subsection{The judge-model tier}
+
+When a check cannot be written as a function --- is this answer relevant, is it
+grounded in the context it was given --- the extensions library supplies
+evaluators that ask a model. They are adapted onto the same interface, so they
+run through the same call, and they need a chat configuration naming the judge
+model.
+
+\begin{warning}
+A judge model is a language model, with all the properties this chapter opened
+by describing. It is non-deterministic, it can be wrong, and it has its own
+failure modes --- notably a tendency to score verbose answers higher than terse
+correct ones.
+
+Two disciplines make it usable. Use a \emph{different} model from the one under
+test, or you are asking a system to grade its own homework. And validate the
+judge against human judgement on a sample before you trust it, then re-validate
+when you change judge models --- a judge upgrade is a measurement change that
+will move every score you have, and if you have not noticed you will read it as a
+quality change.
+\end{warning}
+
+\subsection{Repetitions are a first-class parameter}
+
+This is the detail that shows the API was designed by someone who had done this
+before. The evaluation call takes a repetition count, and running each query $n$
+times independently is a supported mode rather than something you build around
+the API.
+
+\begin{csharp}[caption={Measuring consistency, not just quality}, label={lst:eval-reps}]
+AgentEvaluationResults results = await agent.EvaluateAsync(
+    queries, evaluator, numRepetitions: 5);
+\end{csharp}
+
+Use it. A query that passes five times out of five and a query that passes three
+times out of five are very different states of health, and a single run cannot
+distinguish them. This is exactly the discipline \S\ref{sec:orch-benchmark}
+demanded of the benchmark, and it is the raw material for
+\S\ref{sec:eval-ci}'s answer to flaky gates.
+
+% ============================================================
 \section{Foundry evaluations}
+\label{sec:eval-foundry}
+\index{evaluation!Foundry}
 
+The third tier runs server-side. It implements the same interface, so switching
+to it is a change of evaluator and nothing else:
+
+\begin{csharp}[caption={Hosted evaluation}, label={lst:eval-foundry}]
+FoundryEvals evaluator = new(projectClient, deploymentName,
+    FoundryEvals.Relevance, FoundryEvals.Coherence);
+
+AgentEvaluationResults results = await agent.EvaluateAsync(queries, evaluator);
+
+Console.WriteLine($"Report: {results.ReportUrl}");
+\end{csharp}
+
+The catalogue is the reason to care, because it goes well beyond the usual
+quality metrics. Grouped by what they measure:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Group} & \textbf{Evaluators} \\
+\midrule
+Agent behaviour & intent resolution, task adherence, task completion, task
+navigation efficiency \\[4pt]
+Tool use & tool call accuracy, tool selection, tool input accuracy, tool output
+utilization, tool call success \\[4pt]
+Response quality & coherence, fluency, relevance, groundedness, response
+completeness, similarity \\[4pt]
+Safety & violence, sexual, self-harm \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Compare that first group against the table in Chapter~\ref{ch:observability}
+\S\ref{sec:obs-gap}. ``Whether calling the tool was the right choice'' is tool
+selection. ``Whether the turns made progress'' is task navigation efficiency.
+``Whether it answered the question asked'' is intent resolution. The things that
+chapter listed as uninstrumented are precisely what this catalogue scores --- the
+capability is not missing from the ecosystem, it is just not in the telemetry
+path, and it costs model calls rather than being free.
+\end{note}
+
+Results carry a report URL, a run identifier and a status, because the evaluation
+happens as a job rather than in your process. That is the trade: you get a
+maintained catalogue and a UI, and you take a network dependency, a per-run cost,
+and a requirement that the data leave your process.
+
+\needscreenshot{foundry-evaluation-report}{A hosted evaluation run, scored}{The
+Foundry evaluation report page reached from the result's report URL, showing a
+completed run with several evaluators scored across a set of queries. At least
+one per-item score breakdown must be expanded so the reader can see what an
+individual judgement looks like. Browser only.}
+
+\begin{versionbox}
+Evaluators are named by string constant, which means the set can grow without a
+package update --- and that a name can stop being recognised. Pin the evaluator
+names you depend on in configuration, and treat an unrecognised evaluator as a
+build failure rather than a silently missing score.
+\end{versionbox}
+
+% ============================================================
 \section{Building an evaluation set from production traces}
+\label{sec:eval-set}
+\index{evaluation!building a set}
 
-\section{Evaluating the four orchestration patterns}
-% Reuse the Chapter 7 benchmark under a scoring harness
+Everything above needs inputs. Inventing them is the standard approach and it is
+the reason most evaluation sets are useless: engineers write the queries they
+imagined, which are the ones the system already handles.
 
+Your traces are full of the queries it does not. Chapter~\ref{ch:observability}
+put every agent run into a tracing backend; that is an evaluation set waiting to
+be extracted.
+
+\subsection{What to select}
+
+Do not sample uniformly. A random sample of production traffic is mostly the easy
+case, and evaluating it repeatedly tells you what you already know. Select for
+signal:
+
+\begin{itemize}[leftmargin=1.4em]
+\item Runs where a cheap scorer from \S\ref{sec:obs-scoring} flagged something ---
+      a refusal, a truncation, a tool loop that hit its cap.
+\item Runs with unusual shapes: far more turns than the median, far more tokens,
+      far longer latency.
+\item Runs a user abandoned, if you can tell.
+\item Runs that a human later corrected, which are the highest-value items in
+      the whole system and are usually thrown away.
+\item A modest random sample as a control, so you can tell a regression from a
+      change in what you selected.
+\end{itemize}
+
+\begin{warning}
+\index{evaluation!PII}
+Production traces contain user data. An evaluation set built from them is a copy
+of that data, living in a repository, being read by a judge model, and quite
+possibly leaving your process to a hosted evaluator.
+
+Treat building the set as a data-handling change, not an engineering
+convenience: redact before it lands in the repository rather than after,
+establish who may read it, and give it a retention policy. This is the second
+time this book has raised this --- \S\ref{sec:obs-otel} warned about sensitive
+data in spans --- and the two problems compound, because it is the traces with
+content enabled that make the best evaluation items.
+\end{warning}
+
+\subsection{Curating, which is the actual work}
+
+Extraction gives you inputs. An evaluation set needs inputs \emph{plus} some
+notion of what a good response looks like, and that part is human.
+
+The efficient path is to grade a batch by hand once, then use those gradings to
+validate a judge, then let the judge scale. What you are buying with the manual
+pass is not the labels --- it is the knowledge of whether your scorer agrees with
+you.
+
+\begin{note}
+Keep the set small enough to run often. Two hundred well-chosen items you run on
+every pull request beats ten thousand you run quarterly, because only the first
+one changes anyone's behaviour. Grow it by adding cases you got wrong, which is
+how a regression suite is supposed to grow anyway.
+\end{note}
+
+% ============================================================
+\section{Evaluating the orchestration patterns}
+\label{sec:eval-orchestration}
+
+Chapter~\ref{ch:orchestration} specified a benchmark and deliberately reported no
+results. Its correctness measure was binary --- did the run produce the known
+answer --- and \S\ref{sec:orch-benchmark} said plainly that this is not a quality
+measure and named this chapter as the place the gap gets closed.
+
+Here is how it closes. A completed workflow run can be evaluated directly, and
+the result carries a per-agent breakdown:
+
+\begin{csharp}[caption={Scoring a workflow run, per agent}, label={lst:eval-workflow}]
+await using Run run = await InProcessExecution.RunAsync(workflow, task);
+
+AgentEvaluationResults results = await run.EvaluateAsync(evaluator);
+
+Console.WriteLine($"Overall: {results.Passed}/{results.Total}");
+
+foreach (var (agentName, sub) in results.SubResults ?? [])
+{
+    Console.WriteLine($"  {agentName}: {sub.Passed}/{sub.Total}");
+}
+\end{csharp}
+
+That per-agent breakdown is what makes the comparison worth running. A pattern's
+aggregate score tells you whether it worked; the breakdown tells you \emph{which
+participant} was responsible, which is the difference between ``group chat scored
+worse'' and ``group chat scored worse because the critic agent contributed
+nothing in eight runs out of twenty''. Only the second is actionable.
+
+\begin{note}
+\textbf{This is why Chapter~\ref{ch:orchestration} told you to keep the raw event
+streams.} Re-scoring a stored run under a new evaluator is cheap. Re-running five
+orchestration patterns twenty times each to recover the runs is not --- it is the
+entire cost of the benchmark, paid again, because a scorer changed.
+\end{note}
+
+\begin{warning}
+The tables in Appendix~\ref{app:providers} are still empty. This section
+describes how to score the benchmark; it does not report scores, because the
+benchmark has not been run. That remains the largest outstanding piece of
+original work in this book, and adding an evaluation harness to a study that does
+not exist yet does not change its status.
+\end{warning}
+
+% ============================================================
 \section{Regression gates in CI}
-% Where this belongs in a pipeline, and the flakiness problem
+\label{sec:eval-ci}
+\index{evaluation!CI gates}
 
+The framework anticipates this, and the evidence is that results carry assertion
+methods --- which exist for exactly one reason, which is to be called from a test:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Assertion} & \textbf{Fails when} \\
+\midrule
+\code{AssertAllPassed} & Any item failed any check \\
+\code{AssertNoFailedItems} & Any item failed outright \\
+\code{AssertScoreAtLeast} & The aggregate score is below a threshold \\
+\code{AssertDimensionScoreAtLeast} & One named dimension is below a threshold \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{csharp}[caption={An evaluation as a test}, label={lst:eval-test}]
+[Fact]
+public async Task SupportAgent_MeetsQualityBar()
+{
+    AgentEvaluationResults results = await this._agent.EvaluateAsync(
+        EvaluationSet.Queries, this._evaluator, numRepetitions: 3);
+
+    results.AssertScoreAtLeast(0.8);
+}
+\end{csharp}
+
+So the mechanism is trivial. The reason most teams do not have this working is
+not the mechanism.
+
+\subsection{The flakiness problem, which is the real subject}
+
+Here is what happens. A team adds an evaluation gate. It is non-deterministic, so
+it fails occasionally on changes that did nothing wrong. Developers re-run it.
+Re-running becomes reflex. Within a month the gate is advisory, and shortly after
+that someone removes it because it is slow and always red.
+
+That progression is close to universal, and it is not a discipline failure. It is
+the predictable result of putting a stochastic check in a place that demands a
+binary answer. Four things actually help.
+
+\textbf{Gate on aggregates, never on individual items.} One item failing is
+noise. The mean across two hundred items dropping five points is signal. Assert
+on the aggregate and let individual items move.
+
+\textbf{Set the threshold from measured variance, not from a round number.} Run
+the suite ten times against an unchanged system. Whatever spread you see is your
+noise floor; the gate goes below it. A threshold of 0.8 chosen because it looks
+like a good number will fire on noise or miss real regressions, and you will not
+know which.
+
+\textbf{Compare against the baseline, not against an absolute.} The question is
+whether this change made things worse. Score the merge base, score the branch,
+gate on the difference. This also survives model upgrades, which move every
+absolute score at once and would otherwise light up every gate you own.
+
+\textbf{Put the expensive tier somewhere other than the pull request.} Local
+checks are fast, free and deterministic --- run those on every commit. The judge
+tier belongs on a schedule or on merge to the main branch, because a gate that
+adds ten minutes and a model bill to every push will be removed, correctly, by
+whoever is trying to ship.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Where} & \textbf{What runs} \\
+\midrule
+Every commit & Local checks. Seconds, free, deterministic \\[4pt]
+Pull request & Local checks over the full set, plus judge scoring on a small
+fixed subset \\[4pt]
+Merge to main & Full judge evaluation against the baseline, with repetitions \\[4pt]
+Nightly & The whole set, all tiers, trended over time \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+The trend line is the thing most teams skip and most regret skipping. A gate
+tells you about one change. A chart of the score over sixty days tells you that
+quality has been drifting down since a model upgrade three weeks ago --- which no
+individual gate would ever have caught, because no single change was responsible.
+\end{note}
+
+\needscreenshot{ci-evaluation-gate-failure}{A quality regression, caught before
+merge}{A pull request check showing a failed evaluation gate, with the test
+output visible: the aggregate score, the threshold it fell below, and at least
+two individual item failures listed underneath. The reader must be able to see
+that the failure is an aggregate score falling rather than a single assertion.
+Browser or terminal, no IDE.}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:hosting}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Write three local checks for your own agent, one of which is refusal
+      detection. Run them over twenty queries. This should take under an hour and
+      will find something.
+\item Establish your noise floor: run the same suite ten times against an
+      unchanged agent and record the spread. Any gate threshold you set without
+      this number is guesswork.
+\item Take one prompt you believe is an improvement. Score the baseline, score
+      the change, and compare. Be honest about the result --- roughly half of
+      these turn out to be neutral.
+\item Build an evaluation set from real traces using the selection criteria in
+      \S\ref{sec:eval-set}. Compare it against a set you wrote from
+      imagination. The difference in what fails is the point of the section.
+\item Add the cheapest possible gate to CI --- local checks only, aggregate
+      threshold, compared against the merge base. Leave it a month and see
+      whether anyone has disabled it. If they have, ask why; the answer is
+      usually one of the four in \S\ref{sec:eval-ci}.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+Agent output is non-deterministic, so evaluation replaces assertion with scoring,
+one run with many, and absolute judgement with comparison against a baseline. A
+crude but stable scorer is more useful than a sophisticated unstable one, because
+what you need is for a change in the score to mean a change in the system.
+
+Evaluation does not live entirely in the extensions library. The core agent
+package owns the abstraction --- a batch evaluator interface, and extension
+methods that run an agent or a completed workflow and score the results in one
+call --- and there are three implementations forming a cost ladder: local
+deterministic checks, judge-model evaluators adapted from the extensions library,
+and hosted Foundry evaluators.
+
+Start at the bottom of that ladder. Local checks cost nothing, run in
+milliseconds, and the tool-oriented ones catch the failures that matter most ---
+the tool not called, the wrong tool called, the right tool called with wrong
+arguments. Use a judge only for what a function cannot express, use a different
+model from the one under test, and validate the judge against human judgement
+before trusting it.
+
+The Foundry catalogue scores precisely what Chapter~\ref{ch:observability} listed
+as uninstrumented: intent resolution, task adherence, task navigation efficiency,
+tool selection. That capability is not missing from the ecosystem --- it is
+outside the telemetry path and costs model calls.
+
+Build evaluation sets from production traces rather than imagination, selecting
+for signal rather than sampling uniformly, and treat the set as a data-handling
+change because that is what it is.
+
+Repetitions are a first-class parameter and the reason to use them is the same
+reason Chapter~\ref{ch:orchestration} demanded distributions rather than best
+runs. Workflow runs can be scored with a per-agent breakdown, which turns ``this
+pattern scored worse'' into ``this participant contributed nothing'' --- and
+which is why the raw event streams from that benchmark are worth keeping.
+
+Gates fail for a predictable reason: a stochastic check placed where a binary
+answer is demanded. Gate on aggregates, set the threshold from measured variance,
+compare against the baseline rather than an absolute, and keep the expensive tier
+off the pull request. Then chart the trend, because the drift no single change
+caused is the one nothing else will catch.
+
+Chapter~\ref{ch:hosting} takes all of this somewhere it has to keep running.
