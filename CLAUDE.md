@@ -13,7 +13,7 @@ Read this before touching a chapter.
 | Chapters | **1–12, all drafted** | — |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 236 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 242 pages, zero unresolved references.
 
 **A full draft exists.** Every chapter and appendix is written. What remains is
 not drafting but the debt below — two unrun experiments, the screenshots, the
@@ -29,12 +29,18 @@ verifyboxes, the version-bump pass, and one section only the author can finish.
   written generically because only the author knows the specifics. See item 8.
 - **Item 4's version-bump pass is now the largest structural job left.**
 
-Overfull hboxes: **46**. Chapters 5, 6 and 10 added none (6 removed a
-pre-existing one); Chapters 7, 8, 9, 11 and 12 added eight between them, all
-under 13 pt and all but one in Appendix D's manifest, which is smaller than the
-entries already there. Check any new chapter the same way: build once with the
-chapter stubbed out, once with it in, and diff the `Overfull` lists. Attributing
+Overfull hboxes: **46**, and zero overfull vboxes. The consistency pass added
+none of either. Check any change the same way: build once with it reverted, once
+with it in, and diff the `Overfull` lists — comparing the *multiset of sizes*,
+because line numbers shift and make a plain `diff` of the log noisy. Attributing
 boxes by reading `main.log` nesting does not work.
+
+**Count vboxes too.** `grep -c 'Overfull' main.log` lumps hbox and vbox together.
+An overfull **vbox** means a `center`+`tabularx` block grew past a page — those
+cannot break, so a long table plus adjacent admonitions overflows by hundreds of
+points. The fix is to split the table into subsections, not to shrink the text.
+A long `\pkg{}` name in a natural-width first column also squeezes the `X`
+description column badly; move such rows into a displayed list instead.
 
 Note that long `\code{}` identifiers inside `\needscreenshot` instruction text
 land in Appendix D's narrow manifest column and overflow badly there — one such
@@ -634,15 +640,44 @@ remaining work is finishing, not writing, and it is in rough priority order:
    report nothing. The cold-start one is cheaper — do it first. Until they run,
    Appendix B stays empty and no comparative performance claim may be stated as
    fact anywhere in the book.
-2. **The version-bump pass** (items 4, 5, 6). `\mafcore` is two trains stale,
-   Appendix A's table and package list are out of date, and Appendix A still
-   names the pre-Chapter-6 checkpoint types. This is one dedicated sweep, not a
-   side effect of another chapter.
+2. **The version-bump pass** (item 4). `\mafcore` is two trains stale and
+   Appendix A's train table and dates are a stale snapshot. One dedicated sweep.
+   Items 5 and 6 are now **done** — see the consistency pass below.
 3. **Chapter 11 §11.6** (item 8) — only the author can finish it.
 4. **Screenshots and verifyboxes.** 27 and 23 respectively. Each verifybox is a
    promise to a reader that something was not compiled; clearing one means
    compiling the listing, not rereading it.
-5. **Appendix A's margin cleanup.** 58 overfull boxes, the worst in the book.
+5. **The index is thin** — roughly 80 entries for 242 pages, and Chapter 12 has
+   none at all. A book that runs `\makeindex` and produces a two-page index looks
+   unfinished. Mechanical work, worth its own commit.
+6. **Appendix A's margin cleanup.** The worst margin debt in the book.
+7. Optional: a glossary (superstep, executor binding, isolation key, delivery
+   status, progress ledger) and a further-reading section. Neither is essential.
+
+### Consistency pass — DONE (July 2026)
+
+Ran after the draft completed, to fix places where the appendices predated the
+chapters and disagreed with them. Two were outright errors:
+
+- **Appendix C said a type mismatch "surfaces at run time"** and implied the
+  source generators catch it. Both wrong: it is a *silent drop*, and the
+  generators catch handler shape (`MAFGENWF001`–`007`), not edge types. Rewritten
+  against Ch. 5 §5.3 and pointed at Ch. 8's query.
+- **Appendix C said multi-agent traces lose their parent-child relationship** and
+  told the reader to check context propagation. Nothing is broken — executor
+  spans are siblings by design. Rewritten against Ch. 8 §8.4.
+
+Also fixed: Appendix A still said "threads" (pre-rename vocabulary) and still
+described the checkpoint types wrongly (item 5); the seven never-mentioned
+packages are now in Appendix A (item 6); Appendix C gained entries for hosting,
+evaluation and the harness, which it had none of; Chapter 4 now tells the reader
+the in-box storage backends exist *before* it spends thirty pages hand-rolling
+one.
+
+**One genuine defect found in a chapter:** Chapter 11 implied both CodeAct
+packages sandbox. `LocalCodeAct` does not — its own description says it requires
+external sandboxing, and syntax-tree validation is not a security boundary. Now
+warned about in both Ch. 11 and Appendix A.
 
 When revising a written chapter, the same rule applies as when drafting: verify
 against the upstream source before changing any API detail. Every chapter pass so

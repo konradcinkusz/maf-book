@@ -384,6 +384,20 @@ local CodeAct package alongside it. If you ruled this out on the basis that it
 was not available to you, check again.
 \end{versionbox}
 
+\begin{warning}
+\index{CodeAct!sandboxing}
+\textbf{The two packages differ in the one property that matters, and their names
+do not say so.} The micro-VM package executes generated code inside an isolation
+boundary. The \emph{local} package does not sandbox at all --- it validates the
+generated code's syntax tree, and its own description states that it requires
+external sandboxing, such as a container or a VM.
+
+Syntax-tree validation is not a security boundary. It rejects code that is
+obviously wrong; it does not stop code that is deliberately hostile. Choosing the
+local package because it has fewer moving parts means you have taken on the
+sandboxing yourself, to the standard of \S\ref{sec:harness-shell}.
+\end{warning}
+
 The reported figures from Microsoft's own announcement, on a multi-step
 workload, were a drop from 27.81 seconds to 13.23 seconds and from 6,890 tokens
 to 2,489.
@@ -519,7 +533,8 @@ make a build work --- so loosen deliberately, and write down why.
 CodeAct collapses many tool-calling turns into one generated program in a
 sandbox. It is no longer Python-only. The published figures are large enough to
 justify measuring on your own workload, and the isolation story is better than
-the tool-by-tool alternative rather than worse.
+the tool-by-tool alternative rather than worse --- but only for the micro-VM
+package. The local one validates syntax and leaves the sandboxing to you.
 
 For anyone building agent tooling: the loop is now free. What is not free is
 everything organisational --- multi-user, audit, policy enforcement, and the
