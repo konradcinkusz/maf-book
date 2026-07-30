@@ -5,6 +5,9 @@ Organised by \emph{symptom}, because that is what you have when you arrive here.
 
 % ============================================================
 \section{Package and restore}
+\index{troubleshooting!restore failures}
+\index{troubleshooting!version conflict}
+\index{Central Package Management}
 
 \subsection{``Package X does not exist''}
 
@@ -44,6 +47,9 @@ saying which package caused it and when to remove the suppression.
 
 % ============================================================
 \section{Authentication}
+\index{troubleshooting!authentication}
+\index{DefaultAzureCredential@\texttt{DefaultAzureCredential}}
+\index{user secrets}
 
 \subsection{\texttt{DefaultAzureCredential} fails with no obvious cause}
 
@@ -72,6 +78,7 @@ See \S\ref{sec:swap} in Chapter~\ref{ch:first-agent}.
 
 % ============================================================
 \section{The agent will not call your tool}
+\index{troubleshooting!tool not called}
 \label{sec:tb-no-tool-call}
 
 The most confusing failure in the framework, because \textbf{nothing errors}. The
@@ -99,6 +106,8 @@ afternoon.
 
 % ============================================================
 \section{Conversation and state}
+\index{troubleshooting!state}
+\index{troubleshooting!session serialisation}
 
 \subsection{The agent forgets everything between turns}
 
@@ -129,6 +138,9 @@ be aware that compaction is lossy by design and can remove something you needed.
 
 % ============================================================
 \section{Workflows}
+\index{troubleshooting!no workflow output}
+\index{troubleshooting!resume divergence}
+\index{troubleshooting!barrier never releases}
 
 \subsection{The workflow produces no output, or a node never runs}
 
@@ -217,6 +229,9 @@ whose status is \code{buffered} that never progress.
 
 % ============================================================
 \section{Observability}
+\index{troubleshooting!no traces}
+\index{troubleshooting!half a trace}
+\index{troubleshooting!unreadable traces}
 
 \subsection{No traces appear}
 
@@ -262,6 +277,8 @@ view that is wrong. Chapter~\ref{ch:capstone}, \S\ref{sec:cap-ingest}.
 
 % ============================================================
 \section{Hosting}
+\index{troubleshooting!session leakage}
+\index{troubleshooting!expired conversation}
 
 \subsection{Users can see one another's conversations}
 
@@ -285,6 +302,8 @@ what your product actually promises. Chapter~\ref{ch:hosting},
 
 % ============================================================
 \section{Evaluation and the harness}
+\index{troubleshooting!flaky gate}
+\index{troubleshooting!context overflow}
 
 \subsection{The CI evaluation gate is flaky and people have stopped trusting it}
 

@@ -31,6 +31,12 @@ author's own code and has not been compiled.
 % ============================================================
 \section{The middleware pipeline}
 \label{sec:obs-middleware}
+\index{AIAgentBuilder@\texttt{AIAgentBuilder}}
+\index{DelegatingAIAgent@\texttt{DelegatingAIAgent}}
+\index{middleware!agent level}
+\index{middleware!function level}
+\index{middleware!chat client level}
+\index{FunctionInvokingChatClient@\texttt{FunctionInvokingChatClient}}
 \index{middleware}
 
 There is no separate middleware abstraction to learn. Middleware in this
@@ -155,6 +161,11 @@ possible output from an observability layer.
 % ============================================================
 \section{OpenTelemetry out of the box}
 \label{sec:obs-otel}
+\index{activity source}
+\index{OpenTelemetry!GenAI conventions}
+\index{observability!sensitive data}
+\index{WorkflowTelemetryOptions@\texttt{WorkflowTelemetryOptions}}
+\index{span!workflow}
 \index{OpenTelemetry}
 
 Tracing is a decorator you add to the pipeline. It implements the OpenTelemetry
@@ -298,6 +309,9 @@ that it disables exactly the spans \S\ref{sec:obs-reading} needs.
 % ============================================================
 \section{Where traces go}
 \label{sec:obs-destinations}
+\index{Application Insights}
+\index{OTLP}
+\index{sampling}
 
 Nothing here is agent-specific, which is the point --- these are ordinary .NET
 activities and every standard destination works.
@@ -327,6 +341,9 @@ underneath them if volume becomes a problem.
 % ============================================================
 \section{Reading a multi-agent trace}
 \label{sec:obs-reading}
+\index{span!links}
+\index{span!siblings not nested}
+\index{observability!trace shape}
 \index{observability!reading traces}
 
 \subsection{The shape is not what you expect}
@@ -366,6 +383,8 @@ visible in one frame. Aspire dashboard only, not Visual Studio.}
 
 \subsection{Finding the dropped delivery}
 \label{sec:obs-dropped}
+\index{edge!delivery status tag}
+\index{observability!query}
 
 Chapter~\ref{ch:workflows-basics} \S\ref{sec:wf-mismatch} left an IOU: a workflow
 that produces no output is usually a silently dropped message, and the way to
@@ -416,6 +435,8 @@ path to the same span.
 % ============================================================
 \section{DevUI}
 \label{sec:obs-devui}
+\index{DevUI!loopback default}
+\index{DevUI!authentication}
 \index{DevUI}
 
 Traces tell you what happened after the fact. \pkg{Microsoft.Agents.AI.DevUI} is
@@ -455,6 +476,8 @@ dashboard, so traces and interactive inspection sit behind one launch.
 % ============================================================
 \section{What the traces do not measure}
 \label{sec:obs-gap}
+\index{quality!not instrumented}
+\index{observability!what it misses}
 
 Everything so far works. The instrumentation is thorough, standards-based and
 close to free. Now the honest part.
@@ -500,6 +523,9 @@ the first step: if quality is not instrumented, instrument it yourself.
 % ============================================================
 \section{Custom middleware that scores a turn}
 \label{sec:obs-scoring}
+\index{scoring!as span attribute}
+\index{middleware!scoring}
+\index{refusal detection}
 
 The mechanism is already in place. Middleware sees the messages in and the
 response out; the ambient activity is the span the framework created. So a score

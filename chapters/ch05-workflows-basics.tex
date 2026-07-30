@@ -65,6 +65,9 @@ it possible at all.
 
 \subsection{Supersteps}
 \label{sec:wf-supersteps}
+\index{superstep}
+\index{SuperStepCompletedEvent@\texttt{SuperStepCompletedEvent}}
+\index{workflow!execution model}
 \index{workflow!superstep}
 
 The execution model is not ``walk the graph''. It is a sequence of
@@ -127,6 +130,9 @@ like a race condition rather than a design error.
 % ============================================================
 \section{Executors}
 \label{sec:wf-executors}
+\index{Executor<TIn,TOut>@\texttt{Executor<TIn,TOut>}}
+\index{executor!base types}
+\index{HandleAsync@\texttt{HandleAsync}}
 \index{Executor@\texttt{Executor}}
 
 An executor is the unit of work: something that receives a typed message, does
@@ -178,6 +184,9 @@ broadcast has just introduced a bug that the type system will not catch.
 
 \subsection{The context}
 \label{sec:wf-context}
+\index{QueueStateUpdateAsync@\texttt{QueueStateUpdateAsync}}
+\index{workflow!state}
+\index{state!scoped}
 \index{IWorkflowContext@\texttt{IWorkflowContext}}
 
 \api{IWorkflowContext} is small, which is a good sign. The members you will use
@@ -215,6 +224,11 @@ chapter: \emph{if it matters after a restart, it goes in the context}.
 
 \subsection{A function is an executor}
 \label{sec:wf-function-executor}
+\index{ExecutorBinding@\texttt{ExecutorBinding}}
+\index{FunctionExecutor@\texttt{FunctionExecutor}}
+\index{executor!placeholder}
+\index{executor!as function}
+\index{testing!workflow seam}
 
 The symmetry the chapter opened with is not a metaphor. It is implemented as a
 set of implicit conversions on \api{ExecutorBinding}, the type every builder
@@ -262,6 +276,10 @@ This is where the first real gotcha lives, and it is worth the space.
 
 \subsection{What happens on a type mismatch}
 \label{sec:wf-mismatch}
+\index{workflow!silent drop}
+\index{delivery status}
+\index{workflow!type mismatch}
+\index{edge!dropped delivery}
 
 Nothing. That is the answer, and it is not the answer most engineers expect.
 
@@ -347,6 +365,10 @@ internal sealed class FinalOutputExecutor()
 
 \subsection{The chat protocol}
 \label{sec:wf-chat-protocol}
+\index{TurnToken@\texttt{TurnToken}}
+\index{chat protocol}
+\index{executor!adapter}
+\index{SendsMessage@\texttt{SendsMessage}}
 \index{workflow!chat protocol}
 
 Agents in a workflow do not run when they receive a message. They accumulate
@@ -393,6 +415,13 @@ on it. If a workflow mixing executors and agents hangs, look for a missing
 % ============================================================
 \section{Edges}
 \label{sec:wf-edges}
+\index{edge!direct}
+\index{edge!conditional}
+\index{edge!fan-out}
+\index{edge!fan-in barrier}
+\index{SwitchBuilder@\texttt{SwitchBuilder}}
+\index{AddChain@\texttt{AddChain}}
+\index{concurrency!fan-out}
 \index{workflow!edges}
 
 Four kinds, and they compose.
@@ -484,6 +513,11 @@ and fan-in is visible.}
 % ============================================================
 \section{\texorpdfstring{\api{WorkflowBuilder}}{WorkflowBuilder}}
 \label{sec:wf-builder}
+\index{InProcessExecution@\texttt{InProcessExecution}}
+\index{execution mode!Lockstep}
+\index{workflow!reachability validation}
+\index{WithOutputFrom@\texttt{WithOutputFrom}}
+\index{testing!Lockstep}
 \index{WorkflowBuilder@\texttt{WorkflowBuilder}}
 
 The builder is deliberately thin. It takes a start node in its constructor,
@@ -552,6 +586,10 @@ on a busier machine, and you will spend an afternoon on it.
 % ============================================================
 \section{Compile-time route validation}
 \label{sec:wf-generators}
+\index{MessageHandler@\texttt{MessageHandler}}
+\index{diagnostics!MAFGENWF}
+\index{source generators}
+\index{analyzer reference}
 \index{workflow!source generators}
 \index{Workflows.Generators@\texttt{Workflows.Generators}}
 
@@ -655,6 +693,10 @@ the generator is a separate package rather than folded into the main one.
 % ============================================================
 \section{Streaming workflow events}
 \label{sec:wf-events}
+\index{WorkflowEvent@\texttt{WorkflowEvent}}
+\index{ToMermaidString@\texttt{ToMermaidString}}
+\index{ExecutorFailedEvent@\texttt{ExecutorFailedEvent}}
+\index{Graphviz}
 \index{workflow!events}
 
 A run is observed as an asynchronous stream of \api{WorkflowEvent}. The hierarchy

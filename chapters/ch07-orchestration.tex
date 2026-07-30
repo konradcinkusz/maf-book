@@ -30,6 +30,9 @@ says so explicitly rather than offering plausible numbers.
 % ============================================================
 \section{Patterns are conveniences over the graph}
 \label{sec:orch-conveniences}
+\index{AgentWorkflowBuilder@\texttt{AgentWorkflowBuilder}}
+\index{OrchestrationBuilderBase@\texttt{OrchestrationBuilderBase}}
+\index{orchestration!five patterns}
 \index{orchestration!as graph construction}
 
 The claim is easy to state and usually asserted without evidence, so here is the
@@ -135,6 +138,8 @@ write down the order in advance, it is a sequence.
 % ============================================================
 \section{Concurrent}
 \label{sec:orch-concurrent}
+\index{aggregator}
+\index{concurrency!cost of}
 \index{orchestration!concurrent}
 
 Several agents see the same input and work independently; their results are
@@ -168,6 +173,9 @@ sequential critic, and it costs one extra call rather than $n$.
 % ============================================================
 \section{Group chat}
 \label{sec:orch-groupchat}
+\index{GroupChatManager@\texttt{GroupChatManager}}
+\index{RoundRobinGroupChatManager@\texttt{RoundRobinGroupChatManager}}
+\index{iteration limit}
 \index{orchestration!group chat}
 
 Agents take turns in a shared conversation, and a manager decides who speaks
@@ -211,6 +219,12 @@ and should compare it against one before shipping it.
 % ============================================================
 \section{Handoff}
 \label{sec:orch-handoff}
+\index{handoff!injected tools}
+\index{handoff!topology}
+\index{handoff!agent description}
+\index{handoff!tool call filtering}
+\index{delegation versus transfer}
+\index{autonomous mode}
 \index{orchestration!handoff}
 
 Handoff is transfer of control. One agent decides that another agent should take
@@ -328,6 +342,11 @@ seconds if you look at the trace.
 % ============================================================
 \section{Magentic}
 \label{sec:orch-magentic}
+\index{MagenticProgressLedger@\texttt{MagenticProgressLedger}}
+\index{Magentic!plan sign-off}
+\index{Magentic!stall detection}
+\index{loop detection}
+\index{MagenticPlanCreatedEvent@\texttt{MagenticPlanCreatedEvent}}
 \index{orchestration!Magentic}
 
 There is a fifth pattern, it is materially different from the other four, and it
@@ -408,6 +427,9 @@ round. Plain terminal.}
 % ============================================================
 \section{A benchmark across all five}
 \label{sec:orch-benchmark}
+\index{measurement!method}
+\index{distributions versus best runs}
+\index{token accounting}
 \index{orchestration!benchmark}
 
 Everything above is description. Choosing between the patterns needs numbers, and
@@ -519,6 +541,7 @@ empirically --- both need the traces, and re-running to get them is expensive.
 % ============================================================
 \section{When to drop to raw executors and edges}
 \label{sec:orch-dropping}
+\index{orchestration!when to drop to the graph}
 
 The patterns cover common shapes. Here are the signals that yours is not one of
 them, in roughly the order they appear.

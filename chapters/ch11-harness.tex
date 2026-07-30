@@ -28,6 +28,10 @@ transcribed from that source and are reliable. The worked example in
 % ============================================================
 \section{What the harness is}
 \label{sec:harness-what}
+\index{HarnessAgent@\texttt{HarnessAgent}}
+\index{AsHarnessAgent@\texttt{AsHarnessAgent}}
+\index{HarnessAgentOptions@\texttt{HarnessAgentOptions}}
+\index{harness!compaction default}
 \index{harness}
 
 One extension method, on a chat client:
@@ -102,6 +106,15 @@ HarnessAgent agent = chatClient.AsHarnessAgent(new HarnessAgentOptions
 % ============================================================
 \section{What ships inside it}
 \label{sec:harness-inside}
+\index{FileMemoryProvider@\texttt{FileMemoryProvider}}
+\index{FileAccessProvider@\texttt{FileAccessProvider}}
+\index{TodoProvider@\texttt{TodoProvider}}
+\index{AgentModeProvider@\texttt{AgentModeProvider}}
+\index{AgentSkillsProvider@\texttt{AgentSkillsProvider}}
+\index{BackgroundAgentsProvider@\texttt{BackgroundAgentsProvider}}
+\index{plan versus execute}
+\index{progressive disclosure}
+\index{approval fatigue}
 
 \subsection{Default instructions and instruction merging}
 
@@ -197,6 +210,10 @@ you set in advance.
 
 \subsection{Knowing when to stop}
 \label{sec:harness-loop}
+\index{LoopEvaluator@\texttt{LoopEvaluator}}
+\index{AIJudgeLoopEvaluator@\texttt{AIJudgeLoopEvaluator}}
+\index{loop!termination}
+\index{gap analysis}
 
 This one is not in most descriptions of the harness and deserves to be. The
 options accept \emph{loop evaluators}: components that decide whether the agent
@@ -223,6 +240,11 @@ spends your budget.
 
 \subsection{Shell execution and the sandbox}
 \label{sec:harness-shell}
+\index{LocalShellExecutor@\texttt{LocalShellExecutor}}
+\index{DockerShellExecutor@\texttt{DockerShellExecutor}}
+\index{sandbox!container defaults}
+\index{shell execution!policy}
+\index{AcknowledgeUnsafe@\texttt{AcknowledgeUnsafe}}
 \index{harness!shell execution}
 
 Now the part with real consequences. The shell tooling ships two executors, and
@@ -295,6 +317,9 @@ reading it.
 % ============================================================
 \section{Pluggable storage backends}
 \label{sec:harness-storage}
+\index{AgentFileStore@\texttt{AgentFileStore}}
+\index{InMemoryAgentFileStore@\texttt{InMemoryAgentFileStore}}
+\index{testing!in-memory file store}
 
 Everything the agent writes goes through a file store abstraction --- read,
 write, delete, list, exists, search, create directory --- and two implementations
@@ -365,6 +390,8 @@ them. Plain terminal, no IDE.}
 % ============================================================
 \section{CodeAct}
 \label{sec:harness-codeact}
+\index{CodeAct!micro-VM}
+\index{CodeAct!token savings}
 \index{CodeAct}
 
 CodeAct is a different answer to the same problem the harness solves, and it is
@@ -420,6 +447,8 @@ dangerous is the thing with the better containment.
 % ============================================================
 \section{What this means for third-party agent tooling}
 \label{sec:harness-tooling}
+\index{agent tooling!third party}
+\index{policy versus defaults}
 
 The honest section, and the one worth writing carefully, because a great deal of
 recent work now sits underneath a free platform feature.

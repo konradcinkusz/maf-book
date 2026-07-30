@@ -280,4 +280,12 @@
 \newcommand{\dotnetver}{.NET 10}
 \newcommand{\vsver}{Visual Studio 2026}
 
+% The index is two-column and its entries include \texttt{} API names, which do
+% not hyphenate. Ragged right keeps multi-word entries off the margin. It cannot
+% help a single token wider than the column, so keep verbatim index entries under
+% about 29 characters and index longer type names by concept instead.
+% Appended to \theindex so it lands after the class's own \twocolumn setup.
+\apptocmd{\theindex}{\raggedright}{}{%
+  \PackageWarning{maf}{Could not patch theindex for ragged-right setting}}
+
 \makeindex

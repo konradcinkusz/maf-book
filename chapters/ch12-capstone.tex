@@ -27,6 +27,8 @@ with worked reasoning, and expect the schema decisions in
 % ============================================================
 \section{The problem}
 \label{sec:cap-problem}
+\index{capstone}
+\index{quality!joining scores to traces}
 
 Chapter~\ref{ch:observability} \S\ref{sec:obs-gap} put it in one line: the
 framework instruments mechanism thoroughly and quality not at all, so a green
@@ -64,6 +66,9 @@ hundred.
 % ============================================================
 \section{Architecture}
 \label{sec:cap-architecture}
+\index{capstone!architecture}
+\index{trace ingest}
+\index{scoring!out of band}
 
 Four stages, and the discipline is that each is independently useful. A system
 where stage four is the only thing that pays is a system that never ships.
@@ -107,6 +112,10 @@ point.}
 % ============================================================
 \section{Ingesting GenAI traces}
 \label{sec:cap-ingest}
+\index{trace ingest!walking links}
+\index{trace ingest!schema}
+\index{run reconstruction}
+\index{retention policy}
 
 This is the stage with the real engineering, and the one where earlier chapters
 save you the most time --- because two facts from \S\ref{sec:obs-reading} would
@@ -191,6 +200,8 @@ an access model on the day it is built, not when someone asks.
 % ============================================================
 \section{Scoring a workflow run}
 \label{sec:cap-scoring}
+\index{scoring!versioning}
+\index{scoring!attribution}
 
 The scorer is not the contribution here, and it is worth being clear about that
 because it is where the temptation to over-build lives.
@@ -243,6 +254,8 @@ project that gets cancelled.
 % ============================================================
 \section{Comparing topologies empirically}
 \label{sec:cap-compare}
+\index{topology comparison}
+\index{confounding}
 
 With scored runs in a store, the comparison Chapter~\ref{ch:orchestration}
 specified stops being a one-off study and becomes a standing query.
@@ -298,6 +311,8 @@ only.}
 % ============================================================
 \section{Surfacing wasted turns}
 \label{sec:cap-waste}
+\index{wasted turns}
+\index{cost attribution}
 
 The most immediately useful view, and the cheapest to build, because the signals
 were already enumerated in \S\ref{sec:eval-set} for a different purpose. The
@@ -342,6 +357,7 @@ which it stopped making progress visible. Browser only.}
 % ============================================================
 \section{Deploying it}
 \label{sec:cap-deploy}
+\index{capstone!deployment}
 
 Nothing here is new either, which is the point of having read
 Chapter~\ref{ch:hosting}.
@@ -376,6 +392,9 @@ everyone who can reach its URL.
 % ============================================================
 \section{What v1 deliberately leaves out}
 \label{sec:cap-omissions}
+\index{audit trail}
+\index{policy enforcement}
+\index{multi-user}
 
 Chapter~\ref{ch:harness} \S\ref{sec:harness-tooling} listed what the platform
 does not give you and named this chapter as where it gets built. This section is
@@ -426,6 +445,7 @@ wrong in a way nothing will report.
 % ============================================================
 \section{Where to go next}
 \label{sec:cap-next}
+\index{further work}
 
 Two things this book owes and does not have, both stated plainly where they
 belong and both worth more than another chapter of prose.

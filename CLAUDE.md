@@ -13,7 +13,7 @@ Read this before touching a chapter.
 | Chapters | **1–12, all drafted** | — |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 242 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 246 pages, zero unresolved references.
 
 **A full draft exists.** Every chapter and appendix is written. What remains is
 not drafting but the debt below — two unrun experiments, the screenshots, the
@@ -29,8 +29,8 @@ verifyboxes, the version-bump pass, and one section only the author can finish.
   written generically because only the author knows the specifics. See item 8.
 - **Item 4's version-bump pass is now the largest structural job left.**
 
-Overfull hboxes: **46**, and zero overfull vboxes. The consistency pass added
-none of either. Check any change the same way: build once with it reverted, once
+Overfull hboxes: **45**, and zero overfull vboxes. The consistency and index
+passes added none of either, and the index pass removed one. Check any change the same way: build once with it reverted, once
 with it in, and diff the `Overfull` lists — comparing the *multiset of sizes*,
 because line numbers shift and make a plain `diff` of the log noisy. Attributing
 boxes by reading `main.log` nesting does not work.
@@ -647,12 +647,42 @@ remaining work is finishing, not writing, and it is in rough priority order:
 4. **Screenshots and verifyboxes.** 27 and 23 respectively. Each verifybox is a
    promise to a reader that something was not compiled; clearing one means
    compiling the listing, not rereading it.
-5. **The index is thin** — roughly 80 entries for 242 pages, and Chapter 12 has
-   none at all. A book that runs `\makeindex` and produces a two-page index looks
-   unfinished. Mechanical work, worth its own commit.
-6. **Appendix A's margin cleanup.** The worst margin debt in the book.
-7. Optional: a glossary (superstep, executor binding, isolation key, delivery
+5. **Appendix A's margin cleanup.** The worst margin debt in the book.
+6. Optional: a glossary (superstep, executor binding, isolation key, delivery
    status, progress ledger) and a further-reading section. Neither is essential.
+
+### Index pass — DONE (July 2026)
+
+Roughly 80 entries became **397** across six index pages; every chapter and
+appendix now has coverage, including Chapter 12 which had none.
+
+**Conventions, so later additions match.** APIs use a sort key:
+`\index{Name@\texttt{Name}}`. Concepts are lowercase with `!` subentries under a
+shared head — the established heads are `workflow`, `edge`, `executor`,
+`orchestration`, `evaluation`, `observability`, `hosting`, `session`, `harness`,
+`compaction`, `memory`, `state`, `approval`, `packages`, `providers`,
+`troubleshooting`, `sandbox`, `testing`, `measurement`, `scoring`, `handoff`,
+`Magentic`, `CodeAct`, `diagnostics`, `span`, `MCP`. Prefer adding a subentry to
+an existing head over inventing a new one.
+
+**Two hard limits, both learned the hard way:**
+
+- **Verbatim index entries must stay under about 29 characters.** The index is
+  two-column and a single `\texttt{}` token wider than the column overflows. Ragged
+  right (now set in `preamble.tex`) cannot help, because there is no break
+  opportunity inside one word. Index longer type names by concept instead —
+  `handoff!tool call filtering`, not the 32-character type name.
+- **Package names never fit**, so they go under `packages!<name>` with the
+  `Microsoft.Agents.AI.` prefix elided.
+
+Entries were inserted immediately after `\label{sec:...}` anchors, which is
+deterministic, keeps them out of prose, and indexes the page the section starts
+on. The scripts that did it are disposable; the conventions above are not.
+
+**Still worth doing:** Chapters 1–4 have lighter coverage than 5–12, because the
+pass anchored on the section labels that exist and the early chapters have fewer.
+Entries for individual listings and for the failure modes discussed in prose
+would both add value.
 
 ### Consistency pass — DONE (July 2026)
 

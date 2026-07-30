@@ -38,6 +38,12 @@ single solution.
 % ============================================================
 \section{Hosting an agent in ASP.NET Core}
 \label{sec:host-aspnet}
+\index{AgentSessionStore@\texttt{AgentSessionStore}}
+\index{session!isolation key}
+\index{session!store}
+\index{session!claims-based isolation}
+\index{claims}
+\index{multi-tenancy}
 \index{hosting!ASP.NET Core}
 
 Agents register on the host builder like any other service, by name:
@@ -119,6 +125,8 @@ and callers never learn it was a graph.
 % ============================================================
 \section{.NET Aspire integration}
 \label{sec:host-aspire}
+\index{Aspire!app host}
+\index{Aspire!dashboard}
 \index{Aspire}
 
 An agent in production is never just an agent. It is an agent, a database for
@@ -165,6 +173,10 @@ able to see that the telemetry arrived for free. Browser only.}
 % ============================================================
 \section{The durable extension}
 \label{sec:host-durable}
+\index{durability!of the host}
+\index{DurableAgentsOptions@\texttt{DurableAgentsOptions}}
+\index{time to live}
+\index{Azure Functions}
 \index{hosting!durable agents}
 
 An agent conversation that spans days does not fit in a request. The Durable Task
@@ -231,6 +243,12 @@ Durable Task backend.
 % ============================================================
 \section{Agent-to-Agent protocol}
 \label{sec:host-a2a}
+\index{A2A!agent card}
+\index{A2A!tasks}
+\index{A2A!client}
+\index{A2A!server}
+\index{AG-UI}
+\index{interoperability}
 \index{A2A}
 
 \subsection{The protocol}
@@ -330,6 +348,9 @@ without a bespoke contract per application.
 % ============================================================
 \section{Foundry Hosted Agents}
 \label{sec:host-foundry}
+\index{Foundry!hosted agents}
+\index{scale to zero}
+\index{sandbox!per-session VM}
 \index{hosting!Foundry}
 
 The managed option: the agent runs on Microsoft's infrastructure and you stop
@@ -370,6 +391,8 @@ is exactly the workload that needs it.
 
 \subsection{Measuring cold start}
 \label{sec:host-coldstart}
+\index{cold start}
+\index{measurement!cold start}
 
 Chapter~\ref{ch:workflows-advanced} sent you here for a number, and said
 rehydration cost must be measured separately before the hosting claim can be
@@ -408,6 +431,11 @@ tells you which one to work on.
 % ============================================================
 \section{Security}
 \label{sec:host-security}
+\index{prompt injection}
+\index{security!blast radius}
+\index{MCP!supply chain}
+\index{approval!as a control}
+\index{shell execution!risk}
 \index{security}
 
 Hosting is where the security properties stop being theoretical, because until

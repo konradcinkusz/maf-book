@@ -30,6 +30,9 @@ verified thing in the chapter.
 % ============================================================
 \section{Checkpointing}
 \label{sec:dur-checkpointing}
+\index{CheckpointManager@\texttt{CheckpointManager}}
+\index{CheckpointInfo@\texttt{CheckpointInfo}}
+\index{durability!of the graph}
 \index{workflow!checkpointing}
 
 Chapter~\ref{ch:workflows-basics} established the superstep as the unit of
@@ -89,6 +92,9 @@ any conclusions about durability.
 
 \subsection{What is captured, and what is not}
 \label{sec:dur-captured}
+\index{checkpoint!contents}
+\index{checkpoint!what is not captured}
+\index{executor!instance fields}
 
 A checkpoint holds six things: the step number, the workflow's structural
 description, the runner's internal state, the shared state data keyed by scope,
@@ -125,6 +131,11 @@ which is what \S\ref{sec:dur-hooks} is for.
 
 \subsection{Where checkpoints live}
 \label{sec:dur-stores}
+\index{ICheckpointStore@\texttt{ICheckpointStore}}
+\index{FileSystemJsonCheckpointStore@\texttt{FileSystemJsonCheckpointStore}}
+\index{checkpoint!store ordering contract}
+\index{AOT}
+\index{checkpoint!tree}
 
 The storage abstraction is an interface generic in the stored representation,
 with an abstract JSON specialisation and one concrete in-box implementation:
@@ -195,6 +206,10 @@ button that exists in this space.
 % ============================================================
 \section{Resume}
 \label{sec:dur-resume}
+\index{resume!restore versus rehydrate}
+\index{rehydration}
+\index{ResumeStreamingAsync@\texttt{ResumeStreamingAsync}}
+\index{workflow factory}
 \index{workflow!resume}
 
 There are two distinct operations here and the samples name them differently for
@@ -251,6 +266,8 @@ can be in flight across a deploy, either drain them first or version the graph.
 
 \subsection{Proving it, rather than asserting it}
 \label{sec:dur-proving}
+\index{durability!proving it}
+\index{SIGKILL}
 
 The claim ``our workflow is durable'' is worth exactly as much as the experiment
 behind it, so run the experiment. The procedure:
@@ -284,6 +301,10 @@ No IDE chrome beyond the editor pane.}
 
 \subsection{Executor lifecycle hooks}
 \label{sec:dur-hooks}
+\index{OnCheckpointingAsync@\texttt{OnCheckpointingAsync}}
+\index{StatefulExecutor@\texttt{StatefulExecutor}}
+\index{IResettableExecutor@\texttt{IResettableExecutor}}
+\index{executor!lifecycle}
 \index{Executor@\texttt{Executor}!lifecycle hooks}
 
 When you genuinely need instance state --- and sometimes you do --- the executor
@@ -357,6 +378,11 @@ reuse, not durability. Implement it if you share executor instances across runs.
 % ============================================================
 \section{Human-in-the-loop ports}
 \label{sec:dur-hitl}
+\index{RequestPort@\texttt{RequestPort}}
+\index{ExternalRequest@\texttt{ExternalRequest}}
+\index{RequestInfoEvent@\texttt{RequestInfoEvent}}
+\index{approval!endpoint}
+\index{human-in-the-loop!checkpointing}
 \index{workflow!human in the loop}
 
 A request port is a node that represents the outside world. It has a request type
@@ -473,6 +499,11 @@ completions.
 % ============================================================
 \section{Declarative workflows}
 \label{sec:dur-declarative}
+\index{declarative workflows!action kinds}
+\index{Power Fx}
+\index{Copilot Studio}
+\index{DeclarativeWorkflowBuilder@\texttt{DeclarativeWorkflowBuilder}}
+\index{declarative workflows!sandboxing seam}
 \index{workflow!declarative}
 
 \subsection{Not the same graph in YAML}

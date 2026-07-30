@@ -29,6 +29,9 @@ code in \S\ref{sec:eval-set} are the author's own and have not been run.
 % ============================================================
 \section{What ``correct'' means for a non-deterministic system}
 \label{sec:eval-correct}
+\index{evaluation!ground truth}
+\index{non-determinism}
+\index{evaluation!scoring versus assertion}
 \index{evaluation!determinism}
 
 Start with the thing that makes this hard, because every practice in this chapter
@@ -83,6 +86,15 @@ parts users notice.
 % ============================================================
 \section{The evaluation surface}
 \label{sec:eval-surface}
+\index{IAgentEvaluator@\texttt{IAgentEvaluator}}
+\index{LocalEvaluator@\texttt{LocalEvaluator}}
+\index{EvalCheck@\texttt{EvalCheck}}
+\index{FunctionEvaluator@\texttt{FunctionEvaluator}}
+\index{EvalChecks@\texttt{EvalChecks}}
+\index{evaluation!local checks}
+\index{evaluation!judge model}
+\index{evaluation!repetitions}
+\index{EvaluateAsync@\texttt{EvaluateAsync}}
 \index{evaluation!API}
 
 It is natural to assume that evaluation lives entirely in the extensions
@@ -212,6 +224,9 @@ demanded of the benchmark, and it is the raw material for
 % ============================================================
 \section{Foundry evaluations}
 \label{sec:eval-foundry}
+\index{FoundryEvals@\texttt{FoundryEvals}}
+\index{evaluation!hosted}
+\index{evaluation!evaluator catalogue}
 \index{evaluation!Foundry}
 
 The third tier runs server-side. It implements the same interface, so switching
@@ -277,6 +292,8 @@ build failure rather than a silently missing score.
 % ============================================================
 \section{Building an evaluation set from production traces}
 \label{sec:eval-set}
+\index{evaluation!set from traces}
+\index{evaluation!curation}
 \index{evaluation!building a set}
 
 Everything above needs inputs. Inventing them is the standard approach and it is
@@ -339,6 +356,8 @@ how a regression suite is supposed to grow anyway.
 % ============================================================
 \section{Evaluating the orchestration patterns}
 \label{sec:eval-orchestration}
+\index{evaluation!per-agent breakdown}
+\index{SubResults@\texttt{SubResults}}
 
 Chapter~\ref{ch:orchestration} specified a benchmark and deliberately reported no
 results. Its correctness measure was binary --- did the run produce the known
@@ -385,6 +404,11 @@ not exist yet does not change its status.
 % ============================================================
 \section{Regression gates in CI}
 \label{sec:eval-ci}
+\index{AssertScoreAtLeast@\texttt{AssertScoreAtLeast}}
+\index{evaluation!flakiness}
+\index{evaluation!threshold}
+\index{CI!regression gate}
+\index{evaluation!trend over time}
 \index{evaluation!CI gates}
 
 The framework anticipates this, and the evidence is that results carry assertion
