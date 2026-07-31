@@ -5,6 +5,9 @@ Organised by \emph{symptom}, because that is what you have when you arrive here.
 
 % ============================================================
 \section{Package and restore}
+\index{troubleshooting!restore failures}
+\index{troubleshooting!version conflict}
+\index{Central Package Management}
 
 \subsection{``Package X does not exist''}
 
@@ -44,6 +47,9 @@ saying which package caused it and when to remove the suppression.
 
 % ============================================================
 \section{Authentication}
+\index{troubleshooting!authentication}
+\index{DefaultAzureCredential@\texttt{DefaultAzureCredential}}
+\index{user secrets}
 
 \subsection{\texttt{DefaultAzureCredential} fails with no obvious cause}
 
@@ -72,6 +78,7 @@ See \S\ref{sec:swap} in Chapter~\ref{ch:first-agent}.
 
 % ============================================================
 \section{The agent will not call your tool}
+\index{troubleshooting!tool not called}
 \label{sec:tb-no-tool-call}
 
 The most confusing failure in the framework, because \textbf{nothing errors}. The
@@ -99,6 +106,8 @@ afternoon.
 
 % ============================================================
 \section{Conversation and state}
+\index{troubleshooting!state}
+\index{troubleshooting!session serialisation}
 
 \subsection{The agent forgets everything between turns}
 
@@ -129,36 +138,119 @@ be aware that compaction is lossy by design and can remove something you needed.
 
 % ============================================================
 \section{Workflows}
+\index{troubleshooting!no workflow output}
+\index{troubleshooting!resume divergence}
+\index{troubleshooting!barrier never releases}
 
-\subsection{Type mismatch between executors}
+\subsection{The workflow produces no output, or a node never runs}
 
-Messages are typed and edges enforce it. Where the compile-time route generators
-are in use (\pkg{Microsoft.Agents.AI.Workflows.Generators}) this surfaces at
-build time; without them it surfaces at run time, which is worse. Prefer the
-generators.
+Almost always a message dropped on an edge, and the important thing to know is
+that \textbf{this is silent}. No exception, no warning event, no failed executor
+--- the target simply cannot handle the message's runtime type, so nothing is
+delivered and the run continues without it. See
+Chapter~\ref{ch:workflows-basics}, \S\ref{sec:wf-mismatch}.
+
+Two causes account for most of it. Routing matches the runtime type
+\emph{exactly}, so a handler declared against an interface never fires: an
+executor downstream of an agent must declare the concrete list type the agent
+host emits, not an interface over it. And an agent only takes a turn when it
+receives a \api{TurnToken}, so an executor-to-agent edge without an adapter that
+sends one leaves the agent accumulating messages forever.
+
+Find it in the trace rather than the debugger: every delivery attempt emits an
+edge span tagged with whether it was delivered and, if not, why.
+Chapter~\ref{ch:observability}, \S\ref{sec:obs-dropped}, has the query.
+
+\begin{warning}
+\code{Build()} validates \emph{reachability} and nothing else. It does not check
+that edge types are compatible, and cannot --- the framework's source sets out
+four reasons why, summarised in \S\ref{sec:wf-mismatch}. Do not read a successful
+build as evidence that your edges type-check.
+
+The source generators in \pkg{Microsoft.Agents.AI.Workflows.Generators} are worth
+using, but they catch a different class of error: handler \emph{shape}, via the
+\code{MAFGENWF001}--\code{MAFGENWF007} diagnostics. They will not tell you an
+edge carries the wrong type.
+\end{warning}
 
 \subsection{Resume produces a different result than an uninterrupted run}
 
-Something outside the checkpoint is carrying state --- a static field, a cached
-client, an external store mutated between checkpoint and resume. Checkpointing
-captures workflow state, not the state of everything your executors happen to
-touch. Make executors take their dependencies explicitly.
+State is living somewhere the checkpoint does not reach. The most common case by
+far is an \emph{instance field} on an executor --- a counter, a cache, a memoised
+lookup. A checkpoint captures the step number, the graph description, the runner
+state and the scoped state; it does not capture your executors' fields, and
+nothing warns you.
+
+Either route the state through the context, or implement both checkpointing
+hooks \emph{as a matched pair}:
+
+\begin{itemize}[leftmargin=1.4em,nosep]
+\item \code{OnCheckpointingAsync}
+\item \code{OnCheckpointRestoredAsync}
+\end{itemize}
+
+\medskip
+\noindent
+One without the other is worse than neither.
+
+\api{StatefulExecutor} is the better answer: deriving from it wraps the read, the
+cache and the queued write together, and so removes the opportunity to implement
+only one half of the pair. Chapter~\ref{ch:workflows-advanced},
+\S\ref{sec:dur-captured} and \S\ref{sec:dur-hooks}.
+
+Note also that a graph must be rebuilt to the same shape to resume onto it, which
+is why every upstream sample builds its workflow in a factory method rather than
+inline.
 
 \subsection{A human-in-the-loop workflow never resumes}
 
-The response is not reaching the port, or the workflow instance being resumed is
-not the one that paused. Log the workflow instance identifier on both sides
-before debugging anything else.
+Check three things in order.
+
+\begin{enumerate}[leftmargin=1.4em,nosep]
+\item Is the response built \emph{from the request}, by calling
+      \code{CreateResponse} on it, rather than constructed? The response carries
+      the request identifier used to match it, and a hand-made one matches
+      nothing.
+\item Is the checkpoint you are resuming from the one taken \emph{after} the
+      request was emitted? One interaction spans two supersteps and therefore
+      two checkpoints.
+\item Is the rebuilt graph identical to the one that paused?
+\end{enumerate}
+
+Chapter~\ref{ch:workflows-advanced}, \S\ref{sec:dur-hitl}.
+
+\subsection{A fan-in barrier never releases}
+
+One of its sources is dropping rather than delivering. A barrier filters by type
+like any other edge, so a source whose message the target cannot handle
+contributes nothing and the barrier waits forever. This is the previous entry
+wearing a different hat --- find it with the same query, and look for edge spans
+whose status is \code{buffered} that never progress.
 
 % ============================================================
 \section{Observability}
+\index{troubleshooting!no traces}
+\index{troubleshooting!half a trace}
+\index{troubleshooting!unreadable traces}
 
 \subsection{No traces appear}
 
-In order: is the exporter configured and pointing at a reachable endpoint; is the
-activity source registered; is sampling discarding them; is the process exiting
-before the exporter flushes? The last one accounts for most console-app cases ---
-dispose the tracer provider, or add a delay, before the process ends.
+In order: is the exporter configured and pointing at a reachable endpoint; are
+the activity sources registered; is sampling discarding them; is the process
+exiting before the exporter flushes? The last one accounts for most console-app
+cases --- dispose the tracer provider, or add a delay, before the process ends.
+
+\subsection{Half the trace appears --- agents but no graph, or the reverse}
+
+\textbf{There are two activity source names, and both must be registered.}
+Agents, chat clients and compaction emit under one; workflows emit under
+another. Register one and you get half a trace, with no error to tell you the
+other half exists. Chapter~\ref{ch:observability}, \S\ref{sec:obs-otel}, names
+both.
+
+The symptom is diagnostic: workflow spans with no model calls underneath them
+means the agent source is missing; agent spans with no graph around them means
+the workflow source is.
 
 \subsection{Token counts are missing or wrong}
 
@@ -168,9 +260,73 @@ See Appendix~\ref{app:providers}.
 
 \subsection{Traces appear but multi-agent runs are unreadable}
 
-Spans are there but the parent-child relationship is lost, usually because
-context is not flowing across an async boundary or a queue. Check that ambient
-activity context propagates before concluding the instrumentation is inadequate.
+\textbf{Nothing is broken.} Executor spans are siblings rather than nested
+children \emph{by design}: a superstep runs its executors independently, so
+nesting would misrepresent a fan-out as a hierarchy. Causality is carried by span
+\emph{links} instead, and most viewers render links poorly --- often as an icon
+you have to know to click.
+
+So the default view of a workflow trace genuinely does hide the causality, and no
+amount of checking context propagation will change that. Read the ordering off
+the edge spans instead. Chapter~\ref{ch:observability}, \S\ref{sec:obs-reading}.
+
+If you are building something that consumes these traces, the same fact
+determines your schema: walk the links, not the parent-child tree. An ingest
+written against the usual nesting assumption produces a flat, plausible-looking
+view that is wrong. Chapter~\ref{ch:capstone}, \S\ref{sec:cap-ingest}.
+
+% ============================================================
+\section{Hosting}
+\index{troubleshooting!session leakage}
+\index{troubleshooting!expired conversation}
+
+\subsection{Users can see one another's conversations}
+
+Stop and fix this before anything else. The session store's isolation key is not
+uniquely identifying the principal --- two principals sharing a value receive the
+same key and can read and overwrite each other's sessions.
+
+Display names, usernames and email aliases are unsafe keys. The default is the
+stable subject identifier, normally the OpenID Connect \code{sub} claim, which is
+\emph{not} the same as Entra's object identifier. Decide also what your store
+does when the claim is missing, which yields no key at all.
+Chapter~\ref{ch:hosting}, \S\ref{sec:host-aspnet}.
+
+\subsection{A conversation resumed after a long gap comes back empty}
+
+Durable agent entities have a default time to live measured in days. Past that
+window the entity has expired, and the conversation returns empty rather than
+failing --- which presents as amnesia, not as an error. Set the lifetime against
+what your product actually promises. Chapter~\ref{ch:hosting},
+\S\ref{sec:host-durable}.
+
+% ============================================================
+\section{Evaluation and the harness}
+\index{troubleshooting!flaky gate}
+\index{troubleshooting!context overflow}
+
+\subsection{The CI evaluation gate is flaky and people have stopped trusting it}
+
+Expected, and not a discipline problem: it is what happens when a stochastic
+check is placed where a binary answer is demanded. Gate on aggregates rather
+than individual items, set the threshold from measured variance rather than a
+round number, compare against the merge base rather than an absolute, and keep
+the model-graded tier off the pull request. Chapter~\ref{ch:evaluation},
+\S\ref{sec:eval-ci}.
+
+\subsection{Scores moved but nothing changed}
+
+Check whether the scorer changed. A judge model upgrade or a new check moves
+every score at once, and a trend line that mixes scorer versions shows
+measurement events as quality events. Version scores by the scorer that produced
+them. Chapter~\ref{ch:capstone}, \S\ref{sec:cap-scoring}.
+
+\subsection{A harness agent overflows its context window}
+
+Compaction is \emph{disabled} when no options are supplied --- stated in the
+extension method's own documentation --- and a harness workload is exactly the
+kind that overflows. Set a maximum context window and a compaction strategy
+explicitly. Chapter~\ref{ch:harness}, \S\ref{sec:harness-what}.
 
 % ============================================================
 \section{When the answer is not here}

@@ -6,32 +6,648 @@ Agent Framework will tell you what happened. It will not tell you whether it was
 any good.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+The previous three chapters built systems with a lot of moving parts: graphs that
+drop messages silently, runs that resume in a different process, five agents
+handing work between themselves. Every one of those chapters ended by pointing
+here, because none of them can be operated without seeing inside them.
+
+This chapter covers the two mechanisms that make that possible --- middleware,
+which is where you insert your own behaviour, and OpenTelemetry, which is where
+the framework tells you what it did. Both are good. Then it covers the gap
+between them, which is the thesis of everything that follows: the framework
+instruments cost and latency thoroughly and quality not at all, and quality is
+the thing you actually needed to know.
+
+\begin{verifybox}
+Derived from the source of \pkg{Microsoft.Agents.AI} --- the agent builder,
+the OpenTelemetry decorator and the compaction telemetry --- and from the
+\code{Observability/} folder of \pkg{Microsoft.Agents.AI.Workflows}. Activity
+source names, span names and tag keys are transcribed from the constants in that
+source and are reliable. The scoring middleware in \S\ref{sec:obs-scoring} is the
+author's own code and has not been compiled.
+\end{verifybox}
+
+% ============================================================
 \section{The middleware pipeline}
+\label{sec:obs-middleware}
+\index{AIAgentBuilder@\texttt{AIAgentBuilder}}
+\index{DelegatingAIAgent@\texttt{DelegatingAIAgent}}
+\index{middleware!agent level}
+\index{middleware!function level}
+\index{middleware!chat client level}
+\index{FunctionInvokingChatClient@\texttt{FunctionInvokingChatClient}}
+\index{middleware}
+
+There is no separate middleware abstraction to learn. Middleware in this
+framework is the decorator pattern with a builder in front of it: an agent wraps
+an agent, and the builder composes the wrapping. If you have written ASP.NET Core
+middleware the shape will be familiar, and if you have used
+\code{IChatClient} pipelines it is the same idea one level up.
+
+\begin{csharp}[caption={The builder}, label={lst:obs-builder}]
+AIAgent agent = new AIAgentBuilder(innerAgent)
+    .UseOpenTelemetry()
+    .UseLogging(loggerFactory)
+    .Build();
+\end{csharp}
+
+Three places accept your code, and choosing the wrong one is the most common
+mistake in this area --- not because it fails loudly, but because the thing you
+wanted to observe happens at a different level from the one you hooked.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Level} & \textbf{Sees} \\
+\midrule
+Agent & One agent run: the messages in, the response out \\[4pt]
+Function & Each tool call the agent makes, including arguments and result \\[4pt]
+Chat client & Every model request, including each iteration of the tool loop \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 \subsection{Agent-level}
+
+The outermost level. One invocation in, one response out --- regardless of how
+many model calls and tool calls happened inside.
+
+\begin{csharp}[caption={Agent middleware from a delegate}, label={lst:obs-agent-mw}]
+AIAgent agent = new AIAgentBuilder(inner)
+    .Use(async (messages, session, options, next, cancellationToken) =>
+    {
+        Stopwatch sw = Stopwatch.StartNew();
+        await next(messages, session, options, cancellationToken);
+        this._metrics.RecordTurn(sw.Elapsed);
+    })
+    .Build();
+\end{csharp}
+
+There are richer overloads --- one that hands you the inner agent and lets you
+return a response without calling it at all, which is how caching and short
+circuiting are written, and one taking separate delegates for the streaming and
+non-streaming paths. For anything beyond a few lines, derive from
+\api{DelegatingAIAgent} instead and override what you need; it is the same
+mechanism with somewhere to put fields.
+
+\begin{warning}
+\textbf{Implement both paths or neither.} An agent has a streaming and a
+non-streaming entry point, and middleware supplied for only one leaves the other
+uninstrumented. A quality gate that runs on \code{RunAsync} and silently does not
+run on \code{RunStreamingAsync} is worse than no gate, because it is believed.
+\end{warning}
+
 \subsection{Function-level}
+
+One level in: each tool invocation, with its arguments and its result. This is
+where approval gates, argument validation and per-tool timing belong.
+
+\begin{csharp}[caption={Intercepting tool calls}, label={lst:obs-function-mw}]
+AIAgent agent = new AIAgentBuilder(inner)
+    .Use(async (agent, context, next, cancellationToken) =>
+    {
+        if (IsDestructive(context.Function.Name) && !await ApprovedAsync(context))
+        {
+            return "Refused: this tool requires approval.";
+        }
+
+        return await next(context, cancellationToken);
+    })
+    .Build();
+\end{csharp}
+
+\begin{warning}
+\textbf{Function middleware requires a function-invoking chat client somewhere in
+the pipeline.} If the inner agent's pipeline does not include one, the agent this
+adds will throw when it is invoked --- not when it is built. The failure is at run
+time, on the first tool call, in whatever environment first exercised a tool.
+
+If you are constructing the chat client by hand rather than through the usual
+agent construction path, this is the thing to check first.
+\end{warning}
+
 \subsection{Chat-client-level}
+
+The innermost level, and the one people reach for last and should often reach for
+first. An agent run that makes six model calls in its tool loop is one agent-level
+invocation and six chat-client-level ones.
+
+That difference is exactly the compaction point from Chapter~\ref{ch:memory}:
+anything that needs to act on \emph{every} model request --- token accounting,
+context compaction, request-level caching --- belongs here, because at the agent
+level the tool loop has already happened and the tokens are already spent.
+
 \subsection{Exception handling in the pipeline}
 
+Middleware wraps a call, so a \code{try}/\code{catch} around \code{next} does what
+you expect. Three things are worth being deliberate about.
+
+\textbf{Decide whether you are observing or intervening.} Middleware that catches,
+records and rethrows is observation and is safe. Middleware that catches and
+returns a substitute response has changed the agent's behaviour, and the caller
+cannot tell. Both are legitimate; conflating them is not.
+
+\textbf{Streaming exceptions arrive late.} On the streaming path the exception
+surfaces while the caller enumerates, not when the method is called. A
+\code{try}/\code{catch} around the call to \code{next} that returns an enumerable
+will not catch it.
+
+\textbf{Never swallow cancellation.} A cancelled run that is reported as a
+completed one produces a trace that says everything was fine, which is the worst
+possible output from an observability layer.
+
+% ============================================================
 \section{OpenTelemetry out of the box}
-% GenAI semantic conventions: which spans, which attributes
-% OpenTelemetryAgent as an automatic tracing decorator
+\label{sec:obs-otel}
+\index{activity source}
+\index{OpenTelemetry!GenAI conventions}
+\index{observability!sensitive data}
+\index{WorkflowTelemetryOptions@\texttt{WorkflowTelemetryOptions}}
+\index{span!workflow}
+\index{OpenTelemetry}
 
+Tracing is a decorator you add to the pipeline. It implements the OpenTelemetry
+semantic conventions for generative AI systems, so the spans are the standard
+ones rather than a Microsoft dialect, and any conformant backend will understand
+them.
+
+\begin{csharp}[caption={Turning on tracing}, label={lst:obs-otel-agent}]
+AIAgent agent = new AIAgentBuilder(inner)
+    .UseOpenTelemetry()
+    .Build();
+\end{csharp}
+
+Workflows are instrumented separately, on the builder:
+
+\begin{csharp}[caption={Tracing a workflow}, label={lst:obs-otel-workflow}]
+Workflow workflow = new WorkflowBuilder(ingest)
+    .AddEdge(ingest, classify)
+    .WithOutputFrom(classify)
+    .WithOpenTelemetry()
+    .Build();
+\end{csharp}
+
+\subsection{Two activity sources, and you must register both}
+
+This is the detail that costs people an afternoon. Agents and workflows emit
+under \emph{different} activity source names:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Emitted by} & \textbf{Source name} \\
+\midrule
+Agents, chat clients, compaction & \code{Experimental.Microsoft.Agents.AI} \\
+Workflows & \code{Microsoft.Agents.AI.Workflows} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Register one and you get half a trace, with no error to tell you the other half
+exists. The symptom is a workflow trace whose executor spans contain no model
+calls, or a set of agent spans with no graph around them.
+
+\begin{versionbox}
+Note the \code{Experimental.} prefix on the agent source name. It is not
+decoration --- it is the framework telling you that the source name is not yet
+stable. Put it in configuration rather than in a string literal scattered through
+your startup code, because it will change, and when it does your dashboards will
+go quiet rather than break.
+\end{versionbox}
+
+\subsection{Which spans you get}
+
+Workflow instrumentation produces these, and the tag keys are worth knowing
+because \S\ref{sec:obs-reading} debugs with them:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Span} & \textbf{Covers} \\
+\midrule
+\code{workflow.build} & Graph construction and validation \\
+\code{workflow.session} & A run \\
+\code{workflow\_invoke} & An invocation of the workflow \\
+\code{executor.process} & One executor handling one message \\
+\code{edge\_group.process} & One delivery attempt along an edge \\
+\code{message.send} & A message emission \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+Agent spans follow the generative-AI conventions, with an operation named for
+agent invocation and the usual attributes --- agent id, agent name, agent
+description, provider name --- alongside the token counts the conventions define.
+
+\subsection{Compaction telemetry}
+\index{compaction!telemetry}
+
+Chapter~\ref{ch:memory} promised this. Compaction emits its own activities ---
+one for the compaction itself, one for the provider invocation, one for the
+summarisation path --- and the tags are the measurement that section asked for:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Tag} & \textbf{Records} \\
+\midrule
+\code{compaction.strategy} & Which strategy ran \\
+\code{compaction.triggered} & Whether the threshold was crossed \\
+\code{compaction.compacted} & Whether anything was actually removed \\
+\code{compaction.before.tokens} & Token count before \\
+\code{compaction.after.tokens} & Token count after \\
+\code{compaction.before.messages} & Message count before \\
+\code{compaction.after.messages} & Message count after \\
+\code{compaction.duration\_ms} & What it cost in time \\
+\code{compaction.groups\_summarized} & Groups summarised, on that path \\
+\code{compaction.summary\_length} & Length of the summary produced \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+The pair to watch is \code{triggered} against \code{compacted}. A strategy that
+triggers frequently and compacts nothing is doing work and buying nothing, and it
+is invisible in any dashboard that only charts token counts. That comparison is
+the cheapest useful alert in this whole chapter.
+\end{note}
+
+\subsection{Sensitive data}
+
+Both the agent decorator and the workflow options have a switch that puts message
+content --- prompts, responses, executor inputs and outputs --- into span
+attributes. It is off by default.
+
+\begin{warning}
+\index{observability!PII}
+Turning it on sends user input to your tracing backend, where it is retained
+under that backend's policy rather than your application's, is visible to
+everyone with dashboard access, and is almost certainly outside whatever your
+privacy notice describes. That is a defensible trade in local development and
+rarely one in production.
+
+If you need it in production, need it \emph{narrowly}: a sampled fraction, a
+redaction step in front of it, and a retention policy you have actually
+configured. ``We turned on sensitive data to debug an incident and left it on''
+is a common story with a bad ending.
+\end{warning}
+
+The workflow options also let you disable individual span kinds --- build, run,
+executor processing, edge processing, message sends. Edge and message spans are
+by far the highest volume, and a graph running at any real rate will produce more
+of them than anything else in your system. Turning those two off while keeping
+executor spans is a reasonable production posture, with the significant caveat
+that it disables exactly the spans \S\ref{sec:obs-reading} needs.
+
+% ============================================================
 \section{Where traces go}
-% OTLP collector locally; Application Insights when hosted
+\label{sec:obs-destinations}
+\index{Application Insights}
+\index{OTLP}
+\index{sampling}
 
-\section{Reading a multi-agent trace waterfall}
-% SCREENSHOT: aspire-dashboard-trace-waterfall (Aspire dashboard, not VS)
+Nothing here is agent-specific, which is the point --- these are ordinary .NET
+activities and every standard destination works.
 
+Locally, the Aspire dashboard is the fastest thing to stand up and the best trace
+viewer of the three; it runs in a container, speaks OTLP, and needs no account.
+For a hosted application, Application Insights is the path of least resistance on
+Azure. Anything OTLP-compatible works: an OpenTelemetry Collector in front of
+whatever you already run is the arrangement that avoids a decision.
+
+\begin{csharp}[caption={Wiring up tracing}, label={lst:obs-wireup}]
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing
+        .AddSource("Experimental.Microsoft.Agents.AI")   // agents
+        .AddSource("Microsoft.Agents.AI.Workflows")      // workflows
+        .AddOtlpExporter());
+\end{csharp}
+
+\begin{note}
+Sampling deserves a decision rather than a default. Agent runs are low-volume and
+expensive compared with HTTP requests, so the usual instinct to sample at one per
+cent is wrong here --- you will lose the rare failing run, which is the only one
+worth having. Trace every agent run and sample the edge and message spans
+underneath them if volume becomes a problem.
+\end{note}
+
+% ============================================================
+\section{Reading a multi-agent trace}
+\label{sec:obs-reading}
+\index{span!links}
+\index{span!siblings not nested}
+\index{observability!trace shape}
+\index{observability!reading traces}
+
+\subsection{The shape is not what you expect}
+
+A trace of a single agent is a waterfall: an agent span, model calls nested
+inside it, tool calls nested inside those. Familiar, and easy to read.
+
+A workflow trace is not that, and this catches everyone. \textbf{Executor
+processing spans are siblings, not children of one another.} The framework's own
+source says so explicitly, and explains why: the causal relationship between one
+executor and the next is represented with span \emph{links} rather than with
+parent-child nesting.
+
+Once stated it is obviously right. Chapter~\ref{ch:workflows-basics} established
+that a superstep runs its executors independently and delivers their messages to
+the next superstep --- so executor A does not \emph{contain} executor B, it
+precedes it. Nesting would misrepresent a fan-out, where three executors genuinely
+run at once, as a hierarchy.
+
+\begin{warning}
+Most trace viewers render parent-child nesting beautifully and span links poorly
+--- often as a small icon you have to know to click. So the default view of a
+workflow trace is a flat list of executor spans with the causality hidden.
+
+The consequence is practical: \textbf{do not try to read workflow causality off
+the waterfall}. Read it off the edge spans, which is what the next subsection
+does.
+\end{warning}
+
+\needscreenshot{aspire-dashboard-trace-waterfall}{A multi-agent run, as the trace
+shows it}{The Aspire dashboard trace view for a workflow run containing a fan-out
+to two agents and a fan-in. Capture the full span list with the workflow session
+span, the sibling executor spans, the edge spans between them, and the nested
+model-call spans under the agent executors. The point is the contrast between
+nesting under an agent and sibling ordering between executors, so both must be
+visible in one frame. Aspire dashboard only, not Visual Studio.}
+
+\subsection{Finding the dropped delivery}
+\label{sec:obs-dropped}
+\index{edge!delivery status tag}
+\index{observability!query}
+
+Chapter~\ref{ch:workflows-basics} \S\ref{sec:wf-mismatch} left an IOU: a workflow
+that produces no output is usually a silently dropped message, and the way to
+find it is in the trace. Here is the procedure.
+
+Every delivery attempt produces an \code{edge\_group.process} span, and that span
+carries two tags: a boolean recording whether the message was delivered, and a
+string recording why not if it was not. The values of the second are those from
+\S\ref{sec:wf-mismatch} --- \code{delivered}, \code{dropped type mismatch},
+\code{dropped target mismatch}, \code{dropped condition false}, \code{buffered},
+\code{exception}.
+
+So the query is a filter, and it is the single most valuable thing in this
+chapter:
+
+\begin{shellcmd}[caption={The query to save}, label={lst:obs-query}]
+# Every delivery in this run that did not happen, and why.
+span.name = "edge_group.process" AND edge_group.delivered = false
+\end{shellcmd}
+
+Run that against a trace of a workflow that produced nothing and you will
+normally have the answer in one step. The span's source and target tags name the
+edge; the status tag names the cause; and the cause tells you which fix applies:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Status} & \textbf{What to change} \\
+\midrule
+\code{dropped type mismatch} & The target's declared input type. Usually an
+interface where a concrete type was needed \\[4pt]
+\code{dropped condition false} & The edge predicate, or the value it tests \\[4pt]
+\code{dropped target mismatch} & The addressed target id \\[4pt]
+\code{buffered} & Nothing --- a barrier is still waiting. If it never releases,
+one of its sources is dropping \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Save that filter as a dashboard the day you deploy your first workflow, before
+you need it. The failure it catches is silent, which means nobody goes looking
+for it --- they go looking for why the output is empty, which is a much longer
+path to the same span.
+\end{note}
+
+% ============================================================
 \section{DevUI}
-% Local agent debugging and inspection
-% SCREENSHOT: devui-agent-inspect
+\label{sec:obs-devui}
+\index{DevUI!loopback default}
+\index{DevUI!authentication}
+\index{DevUI}
 
+Traces tell you what happened after the fact. \pkg{Microsoft.Agents.AI.DevUI} is
+for the other half of the job: poking at an agent while it runs. It is a web UI
+you mount into your own application, so it inspects the real agent with the real
+configuration rather than a copy.
+
+\begin{csharp}[caption={Mounting DevUI}, label={lst:obs-devui}]
+builder.AddDevUI();
+
+WebApplication app = builder.Build();
+
+app.MapDevUI();
+\end{csharp}
+
+\begin{note}
+\textbf{DevUI is loopback-only by default,} and it warns at startup if you
+configure it otherwise. Remote access is an explicit opt-in, and there is bearer
+token authentication --- configurable in options or through an environment
+variable --- for when you need it reachable from elsewhere.
+
+That default is the right one. A UI that can invoke your agents with your
+credentials is not something to expose casually, and the fact that it is
+convenient to reach from a colleague's machine is precisely the reason it ends up
+reachable from more than that.
+\end{note}
+
+\needscreenshot{devui-agent-inspect}{Inspecting a live agent}{The DevUI interface
+with an agent selected, showing a conversation in progress and the inspection
+pane with the agent's tools and configuration visible. Include at least one tool
+call expanded so its arguments and result can be read. Browser only, no IDE.}
+
+There is also an Aspire integration, which is worth knowing about if you are
+already using Aspire: it wires the developer UI into the app host alongside the
+dashboard, so traces and interactive inspection sit behind one launch.
+
+% ============================================================
 \section{What the traces do not measure}
-% The gap: cost and latency are instrumented; quality is not
-% -> this section is the thesis of the capstone
+\label{sec:obs-gap}
+\index{quality!not instrumented}
+\index{observability!what it misses}
 
+Everything so far works. The instrumentation is thorough, standards-based and
+close to free. Now the honest part.
+
+Read back what is actually recorded. Token counts. Durations. Which executor ran,
+which edge delivered, which model was called, whether an exception was thrown.
+Every one of those is a fact about \emph{mechanism}. Not one of them is a fact
+about whether the agent did a good job.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Instrumented} & \textbf{Not instrumented} \\
+\midrule
+Tokens consumed & Whether the answer was correct \\
+Latency & Whether it answered the question asked \\
+Which tools were called & Whether calling them was the right choice \\
+Turn count & Whether the turns made progress \\
+Errors thrown & Whether a successful run was useless \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+This is not a criticism of the framework. Correctness is domain-specific and no
+framework can know it. But it has a consequence that is easy to miss and
+expensive to learn: \textbf{a green dashboard is compatible with an agent that is
+failing every user}. Latency flat, error rate zero, token cost within budget, and
+every answer wrong. Nothing in the box will page you.
+
+\begin{note}
+Magentic's progress ledger from Chapter~\ref{ch:orchestration} is the one place
+the framework goes further --- it explicitly asks whether progress is being made
+rather than whether work is being done. It is worth noticing that this exists in
+one orchestration pattern and nowhere else, and that it needed a language model
+to compute it. That is a clue about what closing this gap costs.
+\end{note}
+
+This gap is the reason Chapter~\ref{ch:evaluation} exists, and the reason
+Chapter~\ref{ch:capstone} builds what it builds. The rest of this chapter takes
+the first step: if quality is not instrumented, instrument it yourself.
+
+% ============================================================
 \section{Custom middleware that scores a turn}
-% Compute a quality score per turn, attach as a span attribute
+\label{sec:obs-scoring}
+\index{scoring!as span attribute}
+\index{middleware!scoring}
+\index{refusal detection}
 
+The mechanism is already in place. Middleware sees the messages in and the
+response out; the ambient activity is the span the framework created. So a score
+computed in middleware and set as a tag lands on the agent's own span, next to
+the token counts, queryable with the same tools.
+
+\begin{verifybox}
+The author's own code, uncompiled. The shape is verified --- middleware
+registration, and setting tags on the current activity, are both standard --- but
+treat it as a design to type in.
+\end{verifybox}
+
+\begin{csharp}[caption={A quality score as a span attribute}, label={lst:obs-score}]
+AIAgent agent = new AIAgentBuilder(inner)
+    .UseOpenTelemetry()   // outermost: the span must exist before we tag it
+    .Use(async (messages, session, options, innerAgent, cancellationToken) =>
+    {
+        AgentResponse response =
+            await innerAgent.RunAsync(messages, session, options, cancellationToken);
+
+        TurnScore score = await this._scorer.ScoreAsync(messages, response, cancellationToken);
+
+        Activity? activity = Activity.Current;
+        activity?.SetTag("quality.score", score.Value);
+        activity?.SetTag("quality.scorer", score.ScorerName);
+        activity?.SetTag("quality.refused", score.WasRefusal);
+
+        return response;
+    }, runStreamingFunc: null)
+    .Build();
+\end{csharp}
+
+\begin{warning}
+\textbf{Order matters and is easy to get backwards.} The tracing decorator must be
+\emph{outside} the scoring middleware, so that the span is open when the score is
+computed. Reverse them and \code{Activity.Current} is whatever ambient span the
+caller had --- often the incoming HTTP request --- and your scores will attach to
+the wrong thing without ever being null.
+
+Assert on this in a test: run once and confirm the tag is on a span named for
+agent invocation, not on the request span.
+\end{warning}
+
+\subsection{What to score, given that you cannot score correctness}
+
+The scorer is the hard part, and it is worth being clear about what is cheap and
+what is not.
+
+\textbf{Cheap and immediately useful:} refusal detection, empty or truncated
+responses, whether the response cites a tool result it was given, response length
+outside expected bounds, and whether a tool loop terminated or hit its cap. None
+of these needs a model, all of them catch real failures, and together they cover
+a surprising fraction of ``the agent stopped working'' incidents.
+
+\textbf{Expensive:} a model-graded score. It is another model call per turn, on
+the hot path, with its own latency and failure modes --- and its own quality
+problem, one level up. If you do it, do it out of band on a sample, not inline on
+every turn.
+
+\begin{note}
+Even a crude score changes what you can ask. ``Did the refusal rate move after
+yesterday's prompt change'' is answerable with a boolean tag and a dashboard, and
+unanswerable without one. That question --- \emph{did the change make things
+worse} --- is Chapter~\ref{ch:evaluation}'s subject, and a span tag is the
+cheapest possible first version of the answer.
+\end{note}
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:evaluation}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Register only the agent activity source, run a workflow, and look at the
+      trace. Then add the workflow source. The difference is what
+      \S\ref{sec:obs-otel} is warning you about, and seeing it once is worth more
+      than reading it.
+\item Break an edge's types on purpose, as Chapter~\ref{ch:workflows-basics}
+      asked, and this time find it with the query in \S\ref{sec:obs-dropped}.
+      Time yourself. Then find the same bug without the trace.
+\item Instrument the same tool-heavy run with middleware at all three levels and
+      count how many times each fires. The ratio is the tool loop, and it is
+      usually larger than people expect.
+\item Add the refusal-detection scorer. Deploy a deliberately over-cautious
+      system prompt and confirm the dashboard shows it. This is a quality
+      regression caught by an operational signal, which is the whole idea.
+\item Turn on sensitive data in a local Aspire run, look at what is now in your
+      spans, and decide honestly whether you would ship that configuration.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+Middleware is the decorator pattern with a builder in front of it, and it comes
+at three levels. Agent-level sees one run; function-level sees each tool call;
+chat-client-level sees every model request including each iteration of the tool
+loop. Anything that must act on every model request belongs at the innermost
+level, because by the time the agent level sees the run, the tokens are spent.
+Implement the streaming and non-streaming paths together, or leave one silently
+uninstrumented.
+
+Tracing is a decorator on agents and an extension on the workflow builder, and it
+emits the standard generative-AI semantic conventions. Agents and workflows use
+two different activity source names; register both or you get half a trace with
+nothing to tell you the other half exists. The agent source is still prefixed as
+experimental, which is a promise that it will change.
+
+Workflow executor spans are siblings joined by links, not nested children,
+because a superstep runs its executors independently. Most viewers render links
+poorly, so do not read causality off the waterfall --- read it off the edge spans.
+Every delivery attempt is tagged with whether it was delivered and why not, which
+turns Chapter~\ref{ch:workflows-basics}'s silent drop from an afternoon of
+bisection into one filter.
+
+Compaction emits its own before-and-after counts, and the pair worth alerting on
+is triggered against compacted: a strategy that fires often and removes nothing
+costs money and shows up nowhere else.
+
+Everything instrumented is a fact about mechanism. Tokens, latency, which
+executor ran, which tool was called, whether an exception was thrown. Nothing in
+the box records whether the answer was any good, which means a green dashboard is
+compatible with an agent failing every user. Middleware plus a span tag is the
+cheapest first step towards closing that --- refusal detection and truncation
+checks cost nothing and catch real incidents.
+
+Chapter~\ref{ch:evaluation} does the job properly.

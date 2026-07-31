@@ -54,6 +54,13 @@ their continuation.
 
 % ============================================================
 \section{Core --- stable}
+\index{packages!Abstractions}
+\index{packages!Workflows}
+\index{packages!Workflows.Generators}
+\index{packages!Workflows.Declarative}
+\index{packages!OpenAI}
+\index{packages!core train}
+\index{GA support commitment}
 
 These carry no prerelease suffix and are covered by the GA support commitment.
 Everything in Parts~I and~II of this book uses only these.
@@ -65,14 +72,26 @@ Everything in Parts~I and~II of this book uses only these.
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
 \pkg{Microsoft.Agents.AI.Abstractions} & \mafcore{} & Interfaces and abstractions. Reference directly when writing a library that should not pull in the implementation. \\
-\pkg{Microsoft.Agents.AI} & \mafcore{} & Core functionality. \api{AIAgent}, \api{ChatClientAgent}, threads, tools, context providers, middleware. \\
+\pkg{Microsoft.Agents.AI} & \mafcore{} & Core functionality: agents, sessions, tools, context providers, middleware --- and, less obviously, the harness providers and the evaluation abstraction. \\
 \pkg{Microsoft.Agents.AI.OpenAI} & \mafcore{} & OpenAI and Azure OpenAI support. \\
-\pkg{Microsoft.Agents.AI.Workflows} & \mafcore{} & Executors, edges, workflow builder, checkpointing. \\
-\pkg{Microsoft.Agents.AI.Workflows.Generators} & \mafcore{} & Roslyn source generators giving compile-time route configuration for executors. \\
-\pkg{Microsoft.Agents.AI.Workflows.Declarative} & \mafcore{} & YAML-defined workflows. \\
+\pkg{Microsoft.Agents.AI.Workflows} & \mafcore{} & Executors, edges, workflow builder, checkpointing, and the five orchestration builders. \\
+\pkg{Microsoft.Agents.AI.Workflows.Generators} & \mafcore{} & Roslyn source generators giving compile-time route configuration for executors. Referenced as an analyzer --- \S\ref{sec:wf-generators}. \\
+\pkg{Microsoft.Agents.AI.Workflows.Declarative} & \mafcore{} & Trigger-and-actions workflows in YAML. \emph{Not} the builder graph serialised --- \S\ref{sec:dur-declarative}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+Two further declarative packages sit on the same train and are omitted from the
+table only because their names are too long for the column. Both extend the
+declarative workflow runtime rather than replacing it:
+
+\begin{itemize}[leftmargin=1.4em,nosep]
+\item \pkg{Microsoft.Agents.AI.Workflows.Declarative.Foundry} --- the same
+      format, targeting Foundry Agents.
+\item \pkg{Microsoft.Agents.AI.Workflows.Declarative.Mcp} --- MCP server
+      integration for declarative workflows. With the HTTP handler, this is the
+      sandboxing seam described in \S\ref{sec:dur-declarative}.
+\end{itemize}
 
 \begin{note}
 Note what is \emph{not} here: any Ollama, Bedrock or Gemini package. Those
@@ -83,6 +102,14 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 
 % ============================================================
 \section{Providers and protocols --- prerelease}
+\index{packages!Anthropic}
+\index{packages!GitHub.Copilot}
+\index{packages!Foundry}
+\index{packages!AzureAI.Persistent}
+\index{packages!CopilotStudio}
+\index{packages!A2A}
+\index{packages!AGUI}
+\index{packages!Mcp}
 
 \begin{center}
 \small
@@ -96,14 +123,21 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \pkg{Microsoft.Agents.AI.AzureAI} & 1.0.0-rc5 & Foundry Agents, older naming. Superseded. \\
 \pkg{Microsoft.Agents.AI.AzureAI.Persistent} & \mafcore{}-preview & Azure AI Persistent Agents. \\
 \pkg{Microsoft.Agents.AI.CopilotStudio} & \mafext{}-preview & Copilot Studio integration. \\
-\pkg{Microsoft.Agents.AI.A2A} & \mafcore{}-preview & Agent-to-Agent protocol client. \\
+\pkg{Microsoft.Agents.AI.A2A} & \mafcore{}-preview & Agent-to-Agent protocol client. Chapter~\ref{ch:hosting}. \\
 \pkg{Microsoft.Agents.AI.AGUI} & \mafcore{}-preview & Agent-User Interaction protocol client. \\
+\pkg{Microsoft.Agents.AI.Mcp} & \mafcore{}-preview & MCP support beyond the client in Chapter~\ref{ch:tools}, including long-running task integration. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 % ============================================================
 \section{Hosting --- prerelease}
+\index{packages!Hosting}
+\index{packages!Hosting.AspNetCore}
+\index{packages!Hosting.OpenAI}
+\index{packages!Hosting.A2A}
+\index{packages!Hosting.AzureFunctions}
+\index{packages!Foundry.Hosting}
 
 \begin{center}
 \small
@@ -111,7 +145,8 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \toprule
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
-\pkg{Microsoft.Agents.AI.Hosting} & \mafcore{}-preview & General agent hosting. \\
+\pkg{Microsoft.Agents.AI.Hosting} & \mafcore{}-preview & General agent hosting: registration by name, session stores. Chapter~\ref{ch:hosting}. \\
+\pkg{Microsoft.Agents.AI.Hosting.AspNetCore} & \mafcore{}-preview & Claims-based session isolation. \textbf{Read \S\ref{sec:host-aspnet} before using it.} \\
 \pkg{Microsoft.Agents.AI.Hosting.OpenAI} & \mafcore{}-alpha & OpenAI Responses protocol hosting. Alpha --- expect breaking changes. \\
 \pkg{Microsoft.Agents.AI.Hosting.A2A} & \mafcore{}-preview & Hosting A2A agents. \\
 \pkg{Microsoft.Agents.AI.Hosting.A2A.AspNetCore} & \mafcore{}-preview & A2A hosting in ASP.NET Core. \\
@@ -134,6 +169,13 @@ This is the most common cause of a confusing restore failure.
 % ============================================================
 \section{Execution, storage and governance --- prerelease}
 
+\subsection{Execution and sandboxing}
+\index{packages!Harness}
+\index{packages!Tools.Shell}
+\index{packages!Hyperlight}
+\index{packages!LocalCodeAct}
+\index{packages!DurableTask}
+
 \begin{center}
 \small
 \begin{tabularx}{\linewidth}{@{}llX@{}}
@@ -141,26 +183,83 @@ This is the most common cause of a confusing restore failure.
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
 \pkg{Microsoft.Agents.AI.Harness} & \mafext{}-preview & \api{HarnessAgent}: a pre-configured agent for long-running tasks. Chapter~\ref{ch:harness}. \\
-\pkg{Microsoft.Agents.AI.Hyperlight} & \mafext{}-preview & Hyperlight-backed CodeAct --- sandboxed execution of model-generated code. \\
+\pkg{Microsoft.Agents.AI.Tools.Shell} & \mafext{}-preview & \api{LocalShellExecutor} and \api{DockerShellExecutor}. \S\ref{sec:harness-shell}. \\
+\pkg{Microsoft.Agents.AI.Hyperlight} & \mafext{}-preview & Hyperlight-backed CodeAct --- micro-VM sandboxed execution of model-generated code. \\
+\pkg{Microsoft.Agents.AI.LocalCodeAct} & \mafext{}-preview & Local Python CodeAct with syntax-tree validation. \textbf{Does not sandbox} --- see below. \\
 \pkg{Microsoft.Agents.AI.DurableTask} & \mafext{}-preview & Distributed durable execution. Chapter~\ref{ch:hosting}. \\
-\pkg{Microsoft.Agents.AI.CosmosNoSql} & \mafext{}-preview & Cosmos DB NoSQL implementations of \api{ChatHistoryProvider} and \api{CheckpointStore}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warning}
+\index{CodeAct!sandboxing}
+\textbf{The two CodeAct packages have very different safety properties, and their
+names do not tell you so.} The Hyperlight package executes generated code inside
+a micro-VM. The local package does not sandbox at all --- it validates the
+generated code's syntax tree, and its own description states that it requires
+external sandboxing, such as a container or a VM.
+
+Syntax-tree validation is not a security boundary. If you reach for the local
+package because it has fewer moving parts, you have taken on the sandboxing
+yourself, to the standard of \S\ref{sec:harness-shell}.
+\end{warning}
+
+\subsection{Storage}
+\index{packages!CosmosNoSql}
+\index{packages!Valkey}
+\index{packages!Mem0}
+\index{packages!FoundryMemory}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.CosmosNoSql} & \mafext{}-preview & Cosmos DB NoSQL implementations of the history and checkpoint abstractions. \\
+\pkg{Microsoft.Agents.AI.Valkey} & \mafext{}-preview & Valkey-backed chat history persistence. Chapter~\ref{ch:memory}. \\
+\pkg{Microsoft.Agents.AI.Mem0} & \mafext{}-preview & Mem0 as an \api{AIContextProvider} --- hosted agent memory. Chapter~\ref{ch:memory}. \\
 \pkg{Microsoft.Agents.AI.FoundryMemory} & 1.0.0-preview & Foundry Memory integration. Chapter~\ref{ch:memory}. \\
-\pkg{Microsoft.Agents.AI.Purview} & \mafext{}-rc1 & Connecting generative AI apps to Microsoft Purview. \\
-\pkg{Microsoft.Agents.AI.Declarative} & \mafcore{}-rc1 & Declarative \emph{agents}, as distinct from declarative workflows. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 \begin{note}
-\pkg{Microsoft.Agents.AI.CosmosNoSql} is worth noting even if you never use
-Cosmos DB, because its description names the two storage abstractions the
-framework expects you to implement: \api{ChatHistoryProvider} and
-\api{CheckpointStore}. Chapter~\ref{ch:memory} implements the first against
-PostgreSQL; Chapter~\ref{ch:workflows-advanced} uses the second.
+\pkg{Microsoft.Agents.AI.CosmosNoSql} is worth knowing about even if you never
+use Cosmos DB, because it implements both storage abstractions the framework
+expects you to supply. Chapter~\ref{ch:memory} implements the history side
+against PostgreSQL by hand; Chapter~\ref{ch:workflows-advanced} uses the
+checkpoint side.
+
+The checkpoint abstraction is \api{ICheckpointStore<T>}, generic in the stored
+representation. \api{JsonCheckpointStore} is an \emph{abstract base} rather than
+a usable store, and \api{FileSystemJsonCheckpointStore} is the only concrete
+in-box implementation. The manager is the sealed \api{CheckpointManager}, with
+\code{CreateInMemory()}, \code{CreateJson(store, options?)} and \code{Default};
+the manager interface and the in-memory manager are both internal and cannot be
+named from your own code.
 \end{note}
+
+\subsection{Governance, and declarative agents}
+\index{packages!Purview}
+\index{packages!Declarative}
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}llX@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
+\midrule
+\pkg{Microsoft.Agents.AI.Purview} & \mafext{}-rc1 & Connecting generative AI apps to Microsoft Purview. The governance answer to the data-handling warnings in Chapters~\ref{ch:evaluation} and~\ref{ch:capstone}. \\
+\pkg{Microsoft.Agents.AI.Declarative} & \mafcore{}-rc1 & Declarative \emph{agents}, as distinct from declarative workflows. \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 % ============================================================
 \section{Tooling}
+\index{packages!DevUI}
+\index{packages!ProjectTemplates}
 
 \begin{center}
 \small

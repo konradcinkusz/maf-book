@@ -6,30 +6,567 @@ The layer where model reasoning meets a filesystem and a shell --- and the
 question of what is left to build on top of it.
 \end{quote}
 
-% -- OUTLINE (to write) ------------------------------------
+\noindent
+Everything in this book so far has been components: an agent, some tools, a
+graph, a host. This chapter is about the layer above that --- the thing that turns
+those components into an agent which can be pointed at a task and left to work.
+
+If you have used a coding agent, you have used a harness. It is the part that
+keeps a to-do list, reads and writes files, runs commands, decides when it is
+finished, and asks permission before doing anything alarming. That layer used to
+be the differentiated part of a product. It now ships in the box, and this
+chapter is partly about what that means.
+
+\begin{verifybox}
+Derived from the source of \pkg{Microsoft.Agents.AI.Harness}, the
+\code{Harness/} and \code{Skills/} folders of \pkg{Microsoft.Agents.AI}, and
+\pkg{Microsoft.Agents.AI.Tools.Shell}. Type names, option names and defaults are
+transcribed from that source and are reliable. The worked example in
+\S\ref{sec:harness-example} has not been run by the author.
+\end{verifybox}
+
+% ============================================================
 \section{What the harness is}
-% One extension method turns a chat client into a full coding-agent harness
+\label{sec:harness-what}
+\index{HarnessAgent@\texttt{HarnessAgent}}
+\index{AsHarnessAgent@\texttt{AsHarnessAgent}}
+\index{HarnessAgentOptions@\texttt{HarnessAgentOptions}}
+\index{harness!compaction default}
+\index{harness}
 
+One extension method, on a chat client:
+
+\begin{csharp}[caption={A harness agent}, label={lst:harness-basic}]
+HarnessAgent agent = chatClient.AsHarnessAgent();
+\end{csharp}
+
+What comes back is not a thin wrapper. It is a pre-composed pipeline: function
+invocation, chat history persistence, optional in-loop compaction, tool approval,
+OpenTelemetry, and a set of context providers that give the agent memory, file
+access, a to-do list, skills, modes and web search.
+
+\subsection{The package is almost empty, and that matters}
+
+Look at where the code lives and you learn something about how to use it. The
+harness package itself contains three files --- the agent, its options, and the
+extension method. Every provider it composes lives in the \emph{core} package.
+
+That is not an accident of packaging. It means the harness is an opinionated
+assembly of parts that are independently usable, so the choice is not
+harness-or-nothing:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{You want} & \textbf{Do this} \\
+\midrule
+The whole thing & Use the harness agent \\[4pt]
+Most of it & Use the harness and disable what you do not want \\[4pt]
+One piece & Register that provider on an ordinary agent \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+The third row is the one people miss. If all you wanted was a to-do list on an
+existing agent, that provider is a normal \api{AIContextProvider} from
+Chapter~\ref{ch:memory} and you can add it to anything.
+
+\subsection{Options are mostly a list of things to switch off}
+
+The options object is large, and reading it is the fastest way to learn what the
+harness does, because most of its properties are named for the thing they
+disable: compaction, file memory, web search, the to-do provider, the mode
+provider, the skills provider, OpenTelemetry, tool auto-approval.
+
+\begin{warning}
+\textbf{Compaction is off unless you configure it.} The extension method's own
+documentation says that when no options are supplied, the agent uses built-in
+defaults \emph{with compaction disabled}. So the harness does not protect you
+from the context overflow of Chapter~\ref{ch:memory} by default --- and a harness
+agent is precisely the kind of long-running, file-reading, many-turn workload
+that overflows.
+
+Set a maximum context window and a compaction strategy explicitly. This is the
+single most consequential default in the chapter.
+\end{warning}
+
+\begin{csharp}[caption={The configuration that actually matters}, label={lst:harness-options}]
+HarnessAgent agent = chatClient.AsHarnessAgent(new HarnessAgentOptions
+{
+    Name = "repo-assistant",
+    MaxContextWindowTokens = 180_000,
+    MaxOutputTokens = 8_000,
+    CompactionStrategy = compactionStrategy,   // see Chapter 4
+    MaximumIterationsPerRequest = 40,
+});
+\end{csharp}
+
+% ============================================================
 \section{What ships inside it}
-\subsection{Automatic context compaction}
+\label{sec:harness-inside}
+\index{FileMemoryProvider@\texttt{FileMemoryProvider}}
+\index{FileAccessProvider@\texttt{FileAccessProvider}}
+\index{TodoProvider@\texttt{TodoProvider}}
+\index{AgentModeProvider@\texttt{AgentModeProvider}}
+\index{AgentSkillsProvider@\texttt{AgentSkillsProvider}}
+\index{BackgroundAgentsProvider@\texttt{BackgroundAgentsProvider}}
+\index{plan versus execute}
+\index{progressive disclosure}
+\index{approval fatigue}
+
 \subsection{Default instructions and instruction merging}
-\subsection{FileMemoryProvider and FileAccessProvider}
-\subsection{TodoProvider}
-\subsection{AgentModeProvider: plan versus execute}
-\subsection{AgentSkillsProvider}
-\subsection{BackgroundAgentsProvider: fan-out to child agents}
-\subsection{Shell execution and the sandboxed executor}
 
+The harness supplies its own instructions describing the tools and conventions it
+provides. Yours are merged with them rather than replacing them, which is the
+right default --- an agent told to use a to-do list, without being told the
+to-do list exists, is an agent that invents one in prose.
+
+The consequence for you is that your instructions should describe the \emph{task
+and the domain}, not the mechanics. Explaining how to edit a file is redundant
+and, worse, may contradict what the harness already said.
+
+\subsection{File memory and file access}
+
+Two providers, easily confused, doing different jobs.
+
+\textbf{File memory} is the agent's own notes: things it wants to remember across
+turns, written to a store it controls. This is Chapter~\ref{ch:memory}'s agent
+memory, with a filesystem as the backing store rather than a database.
+
+\textbf{File access} is the agent reading and writing \emph{your} files ---
+project files, the thing it was asked to work on. Its options are where the
+safety controls live:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Option} & \textbf{Effect} \\
+\midrule
+\code{DisableWriteTools} & Read-only. The agent can look but not touch \\[4pt]
+\code{DisableReadOnlyToolApproval} & Stop asking before reads \\[4pt]
+\code{DisableWriteToolApproval} & Stop asking before writes \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{note}
+Read-only mode is underused. A large share of what people want from an agent
+over a codebase --- explain this, find where this happens, review this change ---
+requires no writes at all. Turning writes off entirely is a far stronger control
+than approving each one, and it costs nothing when writes were never needed.
+\end{note}
+
+\subsection{The to-do provider}
+
+A structured task list the agent maintains itself, persisted in session state.
+It sounds trivial and is not: it is the mechanism by which a long task survives
+compaction. A plan held only in the conversation is a plan that a summariser can
+quietly drop; a plan held in state is one the agent can re-read after its context
+has been rewritten underneath it.
+
+\subsection{Plan versus execute}
+
+The mode provider tracks an operating mode in session state and gives the agent
+tools to query and change it. Two modes by default --- planning, and autonomous
+execution --- and the set is configurable.
+
+\begin{note}
+\textbf{The default starting mode is plan, not execute.} An agent that proposes
+before it acts is the correct default for anything with side effects, and it is
+worth keeping. The mode is also in the instructions on every invocation, so the
+agent knows which one it is in --- which is what stops the familiar failure of an
+agent that was asked to plan and started editing.
+\end{note}
+
+\subsection{Skills}
+
+Skills are units of capability the agent loads on demand. The provider exposes
+three tools --- load a skill, read a skill's resource, run a skill's script ---
+and skills carry frontmatter describing themselves.
+
+The design point is progressive disclosure. A hundred skills do not mean a
+hundred tool definitions in every request; the agent sees what skills exist and
+loads the ones it needs. That is the same economics as MCP in
+Chapter~\ref{ch:tools}, solved a different way, and it is what makes a large
+capability library affordable.
+
+Skills sources are pluggable and composable, including file-backed and
+programmatic ones, with an aggregating source for combining them.
+
+\subsection{Background agents}
+
+The harness can fan work out to child agents that run in the background, with
+task state tracked in session state so their status survives across turns and
+restarts.
+
+This is the Chapter~\ref{ch:orchestration} concurrent pattern arriving from a
+different direction: there, you declared the parallelism in a graph; here, the
+agent decides at run time to delegate. Same trade --- latency down, tokens up ---
+and now the model is making the call, which means the token cost is not something
+you set in advance.
+
+\subsection{Knowing when to stop}
+\label{sec:harness-loop}
+\index{LoopEvaluator@\texttt{LoopEvaluator}}
+\index{AIJudgeLoopEvaluator@\texttt{AIJudgeLoopEvaluator}}
+\index{loop!termination}
+\index{gap analysis}
+
+This one is not in most descriptions of the harness and deserves to be. The
+options accept \emph{loop evaluators}: components that decide whether the agent
+has finished, rather than letting it decide for itself or stop at an iteration
+cap.
+
+Several ship in the box, including a completion-marker evaluator, one that waits
+for background tasks, a delegate-based one, and --- most interesting --- a judge
+backed by a chat client. The judge is given completion criteria, returns a
+verdict of done or more, and when it says more it supplies a \emph{gap analysis}
+that is fed back to the agent as the next instruction.
+
+\begin{note}
+That is a small, well-shaped idea. ``Are we finished'' is a quality question,
+which Chapter~\ref{ch:evaluation} established needs a scorer rather than a
+counter --- and here the scorer's output is not just a stop signal but the
+feedback that drives the next iteration.
+
+The cautions from \S\ref{sec:eval-surface} apply unchanged: it is a model, it can
+be wrong, and it should not be the same model doing the work. An iteration cap is
+still needed underneath it, because a judge that never says done is a judge that
+spends your budget.
+\end{note}
+
+\subsection{Shell execution and the sandbox}
+\label{sec:harness-shell}
+\index{LocalShellExecutor@\texttt{LocalShellExecutor}}
+\index{DockerShellExecutor@\texttt{DockerShellExecutor}}
+\index{sandbox!container defaults}
+\index{shell execution!policy}
+\index{AcknowledgeUnsafe@\texttt{AcknowledgeUnsafe}}
+\index{harness!shell execution}
+
+Now the part with real consequences. The shell tooling ships two executors, and
+the difference between them is the difference between a demo and something you
+would let near a machine you care about.
+
+\textbf{The local executor} runs commands on the host. Its options offer working
+directory confinement (on by default), environment cleaning, a policy, a timeout
+and an output cap --- and, tellingly, a flag you must set to acknowledge that
+this is unsafe. An API that makes you affirm the risk is an API being honest with
+you.
+
+\textbf{The Docker executor} runs commands in a container, and its defaults are
+the most carefully chosen set of defaults in the framework:
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Default} & \textbf{Meaning} \\
+\midrule
+Network: \code{none} & The container has no network interfaces at all \\[4pt]
+Read-only root & The container filesystem cannot be written \\[4pt]
+Mount read-only & The mounted host directory cannot be written \\[4pt]
+User 65534:65534 & Runs as an unprivileged user, not root \\[4pt]
+PID limit & Bounded process count --- a fork bomb is contained \\[4pt]
+Output cap & Bounded captured output \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{warning}
+Every one of those defaults is safe, and every one of them is something a
+frustrated engineer will turn off to make a build work. Network access is the
+first to go, because installing packages needs it.
+
+If you loosen one, loosen it deliberately and write down why. ``Network is bridge
+because the build restores NuGet packages'' is a decision. Setting the network to
+host --- which the source itself describes as strongly discouraged for untrusted
+code --- because it made something work is not.
+\end{warning}
+
+\begin{note}
+Chapter~\ref{ch:hosting} \S\ref{sec:host-foundry} described per-session
+VM-isolated sandboxes as what makes hosted agents interesting for this workload.
+This is the same problem solved locally, one isolation level weaker: a container
+is not a VM. For your own code on your own machine that is a reasonable trade.
+For running code a model wrote in response to text a stranger supplied, it is
+the difference between a contained incident and an uncontained one.
+\end{note}
+
+\subsection{Tool approval}
+
+The approval machinery from Chapter~\ref{ch:tools} is wired in, with rules and
+an auto-approval mechanism. Note the default: auto-approval is \emph{on}, and
+there is an option to disable it. The skills provider exposes ready-made rules,
+including one that auto-approves read-only tools --- which is the sensible
+posture, since asking a human to approve a file read forty times trains them to
+approve everything.
+
+\begin{warning}
+Approval fatigue is a security control failing, not a UX complaint. A prompt
+that always appears is a prompt that always gets accepted. Auto-approve the
+harmless categories precisely so that the dangerous ones still get read ---
+Chapter~\ref{ch:hosting} \S\ref{sec:host-security} made this the seam that bounds
+the blast radius of an injection, and it only works if a human is still
+reading it.
+\end{warning}
+
+% ============================================================
 \section{Pluggable storage backends}
-% Custom AgentFileStore: filesystem, blob
+\label{sec:harness-storage}
+\index{AgentFileStore@\texttt{AgentFileStore}}
+\index{InMemoryAgentFileStore@\texttt{InMemoryAgentFileStore}}
+\index{testing!in-memory file store}
 
+Everything the agent writes goes through a file store abstraction --- read,
+write, delete, list, exists, search, create directory --- and two implementations
+ship: a filesystem one and an in-memory one.
+
+The in-memory store is more useful than it sounds. It makes a harness agent
+testable: run the agent against an in-memory filesystem, assert on what it wrote,
+and no test touched a disk. That is the same test seam as
+\S\ref{sec:wf-function-executor}, in a different place.
+
+A custom store over blob storage is the obvious production implementation. Note
+that the interface includes regex search across a directory --- a store that
+implements search by reading every file will be the bottleneck in any repository
+of real size.
+
+% ============================================================
 \section{Worked example: an agent that edits your own repository}
+\label{sec:harness-example}
 
+The demonstration is an agent pointed at a checkout, asked to make a small
+change, with the safety rails on.
+
+\begin{verifybox}
+Assembled from verified pieces; not run by the author as a single program.
+\end{verifybox}
+
+\begin{csharp}[caption={A repository agent with rails on}, label={lst:harness-repo}]
+HarnessAgent agent = chatClient.AsHarnessAgent(new HarnessAgentOptions
+{
+    Name = "repo-assistant",
+    MaxContextWindowTokens = 180_000,
+    CompactionStrategy = compactionStrategy,
+    MaximumIterationsPerRequest = 40,
+
+    // The agent works on a real checkout.
+    FileAccessStore = new FileSystemAgentFileStore(repoPath),
+
+    // Ask before writing; do not ask before reading.
+    FileAccessProviderOptions = new() { DisableReadOnlyToolApproval = true },
+});
+\end{csharp}
+
+Build it as a ladder, and note that rung one is not a formality:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item \textbf{Read-only, no shell.} Ask it to explain something. Confirm it
+      cannot write. This establishes that your file access configuration is what
+      you think it is, on a task where being wrong is harmless.
+\item \textbf{Writes on, approval on.} Ask for a small change. Read every
+      approval prompt, and notice how quickly you stop reading them --- that
+      experience is the argument in \S\ref{sec:harness-inside} made concrete.
+\item \textbf{Add the Docker shell executor} so it can build and test. Leave the
+      defaults. Find out whether the build works with no network before deciding
+      what to loosen.
+\item \textbf{Add a loop evaluator} with completion criteria --- tests pass and
+      the change is minimal --- and compare against a plain iteration cap.
+\item \textbf{Point it at a real ticket.} Run it in plan mode first, read the
+      plan, then switch to execute.
+\end{enumerate}
+
+\needscreenshot{harness-approval-and-sandbox}{The rails, working}{A terminal
+running the harness agent against a repository: a tool approval prompt for a file
+write with the target path and a diff or content preview visible, and elsewhere
+in the same session a shell command executed through the container-backed
+executor. If the container's isolation settings are printed at startup, include
+them. Plain terminal, no IDE.}
+
+% ============================================================
 \section{CodeAct}
-% Collapsing many tool-call turns into one generated program in a micro-VM
-% [alpha, Python-only at time of writing] -- understand the pattern, not the API
+\label{sec:harness-codeact}
+\index{CodeAct!micro-VM}
+\index{CodeAct!token savings}
+\index{CodeAct}
 
+CodeAct is a different answer to the same problem the harness solves, and it is
+worth understanding as a pattern even if you do not adopt it.
+
+The observation behind it: an agent doing a multi-step task with tools spends a
+turn per step. Ten steps is ten model calls, ten round trips, and ten copies of
+the growing conversation. But the agent already knows how to express ``do these
+ten things'' --- as a program. So instead of calling tools one at a time, it
+writes code that calls them, and the code runs in a sandbox.
+
+\begin{versionbox}
+\textbf{This is no longer Python-only.} Earlier descriptions of CodeAct in the
+.NET ecosystem, including in some Microsoft material, describe it as a Python
+capability. There is now a micro-VM-backed execution package for .NET and a
+local CodeAct package alongside it. If you ruled this out on the basis that it
+was not available to you, check again.
+\end{versionbox}
+
+\begin{warning}
+\index{CodeAct!sandboxing}
+\textbf{The two packages differ in the one property that matters, and their names
+do not say so.} The micro-VM package executes generated code inside an isolation
+boundary. The \emph{local} package does not sandbox at all --- it validates the
+generated code's syntax tree, and its own description states that it requires
+external sandboxing, such as a container or a VM.
+
+Syntax-tree validation is not a security boundary. It rejects code that is
+obviously wrong; it does not stop code that is deliberately hostile. Choosing the
+local package because it has fewer moving parts means you have taken on the
+sandboxing yourself, to the standard of \S\ref{sec:harness-shell}.
+\end{warning}
+
+The reported figures from Microsoft's own announcement, on a multi-step
+workload, were a drop from 27.81 seconds to 13.23 seconds and from 6,890 tokens
+to 2,489.
+
+\begin{warning}
+Those numbers are Microsoft's, on Microsoft's chosen workload, and this book has
+not reproduced them. Treat them as an indication that the effect is large enough
+to be worth measuring on your workload --- not as a measurement of your workload.
+The method in Chapter~\ref{ch:orchestration} \S\ref{sec:orch-benchmark} applies
+here unchanged, and the shape of the result is predictable: the advantage grows
+with the number of steps and vanishes for single-tool tasks.
+\end{warning}
+
+The security position is the interesting part. Generated code executing in a
+micro-VM is, counter-intuitively, a \emph{stronger} isolation story than a
+sequence of tool calls --- because the blast radius is a VM boundary rather than
+whatever your tools happened to be able to reach. The thing that sounds more
+dangerous is the thing with the better containment.
+
+% ============================================================
 \section{What this means for third-party agent tooling}
-% The honest section: what the platform now does for free, and what does not
+\label{sec:harness-tooling}
+\index{agent tooling!third party}
+\index{policy versus defaults}
 
+The honest section, and the one worth writing carefully, because a great deal of
+recent work now sits underneath a free platform feature.
+
+\begin{note}
+\textbf{Disclosure:} the author works on agent tooling in this space, including a
+product with substantial overlap with what this chapter describes. The assessment
+below is offered with that interest declared rather than concealed, and the
+reader should weigh it accordingly.
+\end{note}
+
+\subsection{What the platform now does for free}
+
+Two years ago, each of these was a reason a product existed. All of them now ship
+in the box: a tool-calling loop with compaction, file read and write with
+approval, a persisted to-do list, plan and execute modes, on-demand skill
+loading, background delegation, a sandboxed shell with defensible defaults,
+tracing, and a judge that decides when the work is done.
+
+If a product's answer to ``what do you do'' is on that list, the answer has
+become ``what the framework does, plus a UI''. That is not a comfortable
+position, and pretending otherwise helps nobody.
+
+\subsection{What it does not do}
+
+The gaps are real, and they are mostly not features --- which is the useful
+observation.
+
+\textbf{The harness is a library, not an application.} There is no multi-user
+story, no persistence beyond what you configure, no permissions model beyond the
+session isolation of Chapter~\ref{ch:hosting}, no audit trail a compliance
+reviewer would accept, and no interface. Everything organisational is still
+yours to build.
+
+\textbf{Nothing here knows whether it did a good job.}
+Chapter~\ref{ch:evaluation} exists because that gap is real, and it does not
+close by adding a harness --- the loop evaluator of \S\ref{sec:harness-loop}
+answers ``am I finished'', which is a narrower question than ``was that any
+good''.
+
+\textbf{Fleet-level questions are unaddressed.} One agent on one task is solved.
+A hundred agents, run by forty people, across a week --- which cost the most,
+which fail most often, which are worth keeping --- is not a harness problem at
+all. It is the problem Chapter~\ref{ch:capstone} builds for.
+
+\textbf{Defaults are not policy.} The framework gives you good defaults and a
+switch for each. It does not give you a way to say ``nobody in this organisation
+may turn the network on in a shell sandbox'' and have that hold. Turning
+individually-sensible defaults into enforceable organisational policy is
+genuinely unsolved and genuinely valuable.
+
+\subsection{The honest conclusion}
+
+Build on the harness rather than around it. A product whose value was the loop
+should expect that value to keep eroding, because platform features get better
+and free is a hard price to beat. A product whose value is what happens when
+there are many agents, many people and a compliance requirement is on ground the
+framework is not competing for.
+
+That is not a comfortable conclusion for anybody with an existing codebase in
+this area, this author included. It is, as far as this book can tell, the correct
+one.
+
+\begin{exercisebox}
+Before Chapter~\ref{ch:capstone}:
+
+\begin{enumerate}[leftmargin=1.4em]
+\item Run the harness with no options and give it a long task. Watch it overflow
+      its context. Then set a compaction strategy and repeat. The default in
+      \S\ref{sec:harness-what} is not theoretical.
+\item Build the repository agent through all five rungs. Count how many approval
+      prompts you read carefully by the end.
+\item Try to make a build work inside the Docker executor without loosening the
+      network default. Write down what you had to change, and whether the
+      alternative was worse.
+\item Replace the iteration cap with a judge loop evaluator on a task with clear
+      completion criteria. Note whether it stopped too early, too late, or right.
+\item List what your own agent tooling does. Cross off everything in
+      \S\ref{sec:harness-tooling}'s first list. Look honestly at what remains ---
+      that is your product.
+\end{enumerate}
+\end{exercisebox}
+
+% ============================================================
 \section{Summary}
+
+The harness is one extension method over a chat client that returns a
+pre-composed pipeline: function invocation, history, approval, tracing, and
+providers for memory, files, to-dos, modes, skills, background delegation and
+search. The package itself is nearly empty --- the providers live in the core
+package --- which means you can take the whole thing, disable parts, or lift a
+single provider onto an ordinary agent.
+
+Compaction is disabled when you supply no options, and a harness workload is
+exactly the kind that overflows. Set a context window and a strategy explicitly;
+it is the most consequential default in the chapter.
+
+The to-do list is how a plan survives compaction. Plan mode is the default
+starting mode, which is right for anything with side effects. Skills use
+progressive disclosure so a large capability library does not cost a large
+request. Loop evaluators decide when the work is finished, and the judge variant
+returns a gap analysis that becomes the next instruction --- with all the
+cautions Chapter~\ref{ch:evaluation} attaches to judges.
+
+The shell executors are the part with consequences. The local one makes you
+acknowledge that it is unsafe; the container one defaults to no network, a
+read-only root, a read-only mount, an unprivileged user and a bounded process
+count. Those defaults are good and each is something someone will switch off to
+make a build work --- so loosen deliberately, and write down why.
+
+CodeAct collapses many tool-calling turns into one generated program in a
+sandbox. It is no longer Python-only. The published figures are large enough to
+justify measuring on your own workload, and the isolation story is better than
+the tool-by-tool alternative rather than worse --- but only for the micro-VM
+package. The local one validates syntax and leaves the sandboxing to you.
+
+For anyone building agent tooling: the loop is now free. What is not free is
+everything organisational --- multi-user, audit, policy enforcement, and the
+fleet-level questions that only appear when there are many agents and many
+people. That is where the remaining work is, and it is what
+Chapter~\ref{ch:capstone} builds.

@@ -13,11 +13,21 @@ Written for engineers who have shipped ASP.NET Core services and are now being
 asked to put an agent into production — not as an introduction to large language
 models.
 
-> **This is a draft.** Chapters 1–3 and all four appendices are written; the rest
-> exist as outlines and compile as part of the book. Listings transcribed from
-> documentation rather than compiled against the SDK carry a visible *"Compile
-> before you trust this"* marker, and the outstanding count is published on every
-> build.
+> **This is a complete draft, not a finished book.** All twelve chapters and four
+> appendices are written — 236 pages, building clean with no unresolved
+> references. What remains is finishing rather than drafting:
+>
+> - **Two experiments are specified but not yet run** — an orchestration
+>   benchmark across the five patterns (§7.7) and a hosted cold-start measurement
+>   (§10.5.3). Both report *no results*, and say so in the text. The tables in
+>   Appendix B are deliberately empty and will stay empty until the runs happen.
+> - **Screenshots and diagrams are outstanding**, printed as visible placeholders
+>   with capture instructions.
+> - **Listings not compiled against the SDK** carry a visible *"Compile before you
+>   trust this"* marker.
+>
+> Every one of those counts is published on each build, so the debt is visible
+> rather than quietly carried.
 
 **[Download the latest PDF](https://github.com/konradcinkusz/maf-book/releases/latest/download/MAF-for-dotnet-Engineers.pdf)** ·
 **[Website](https://konradcinkusz.github.io/maf-book/)**
@@ -37,6 +47,14 @@ models.
 Every sample in Parts I and II runs against a locally served model with **no
 cloud subscription required** — a constraint the official samples do not meet,
 and the reason the experiments in the book are cheap enough to actually run.
+Chapter 10 is the one exception and says so at the top: hosted agents are a
+managed service with no local emulator.
+
+The book is written against the framework's **source**, not its documentation.
+Every chapter pass turned up at least one thing that contradicted the published
+description — renamed types, defaults that are the opposite of what you would
+assume, a format that is not what its name suggests. Where the book has not
+verified something, it says so rather than rounding up.
 
 ---
 
@@ -71,7 +89,7 @@ frontmatter/              title page, introduction
 chapters/                 ch01 – ch12
 appendices/               appA – appD
 figures/screenshots/      drop captures here, named by key
-code/                     compiling sample projects, pulled in via \csfile
+code/                     reserved for compiling sample projects (\csfile) — empty
 docs/                     GitHub Pages site
 .github/workflows/        build (every PR) · release (every tag) · pages
 ```
@@ -81,12 +99,16 @@ docs/                     GitHub Pages site
 ## Releasing
 
 ```bash
-git tag -a v0.3.0 -m "Chapters 1-3 and appendices"
-git push origin v0.3.0
+git tag -a v0.12.0 -m "Full draft: all chapters and appendices"
+git push origin v0.12.0
 ```
 
 The release workflow compiles the book, refuses to publish if any
 cross-reference is unresolved, and attaches the PDF to a GitHub Release.
+
+Tag from a local clone. Pushing tags from a sandboxed CI or web session is
+blocked by the git proxy, so a tag created there exists only until the container
+is reclaimed.
 
 ---
 

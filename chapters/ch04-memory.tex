@@ -274,6 +274,26 @@ Now the storage layer. \api{ChatHistoryProvider} is an abstract class with two
 methods worth overriding; the base class handles filtering, ordering, source
 stamping, and merging with the caller's messages on your behalf.
 
+\begin{note}
+\textbf{Check whether one already exists before writing your own.} Several
+storage backends ship in the box, and if you are already running one of these
+stores the work below is a reading exercise rather than a task:
+
+\begin{itemize}[leftmargin=1.4em,nosep]
+\item \pkg{Microsoft.Agents.AI.CosmosNoSql} --- history \emph{and} the checkpoint
+      store Chapter~\ref{ch:workflows-advanced} needs
+\item \pkg{Microsoft.Agents.AI.Valkey} --- history persistence
+\item \pkg{Microsoft.Agents.AI.Mem0} --- hosted memory as a context provider,
+      which is \S\ref{sec:foundry-memory}'s subject rather than this one
+\end{itemize}
+
+\medskip
+This section builds one against PostgreSQL anyway, and it is still worth your
+time: the four mistakes in \S\ref{sec:provider-mistakes} are ones you can make
+just as easily when configuring somebody else's provider, and the reason they
+matter is invisible until you have written the storage once.
+\end{note}
+
 \begin{center}
 \small
 \begin{tabularx}{\linewidth}{@{}lX@{}}
@@ -402,6 +422,7 @@ internal sealed class PostgresChatHistoryProvider : ChatHistoryProvider
 \end{csharp}
 
 \subsection{Four things that are easy to get wrong}
+\label{sec:provider-mistakes}
 
 \textbf{Use \api{IDbContextFactory}, not an injected \api{DbContext}.} A
 \api{DbContext} is not thread-safe and is scoped; a provider instance is a
@@ -730,7 +751,7 @@ across sessions. In a hosted application,
 \api{AddHostedFoundryMemoryProvider} registers it against the service container.
 
 \begin{versionbox}
-\index{Microsoft.Agents.AI.FoundryMemory@\pkg{Microsoft.Agents.AI.FoundryMemory}}
+\index{packages!FoundryMemory}
 A standalone \pkg{Microsoft.Agents.AI.FoundryMemory} package exists on NuGet and
 is stranded --- its most recent version is from March 2026, several trains behind
 everything else in the family. Do not start from it. The memory provider ships
