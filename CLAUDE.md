@@ -13,11 +13,11 @@ Read this before touching a chapter.
 | Chapters | **1–12, all drafted** | — |
 | Appendices | A, B, C, D | — |
 
-Build is clean: `latexmk -pdf main.tex`, 246 pages, zero unresolved references.
+Build is clean: `latexmk -pdf main.tex`, 248 pages, zero unresolved references.
 
 **A full draft exists.** Every chapter and appendix is written. What remains is
 not drafting but the debt below — two unrun experiments, the screenshots, the
-verifyboxes, the version-bump pass, and one section only the author can finish.
+verifyboxes, and one section only the author can finish.
 
 **Debt ledgers, reported by CI on every build:**
 - 27 screenshots outstanding (`make shots`)
@@ -27,10 +27,10 @@ verifyboxes, the version-bump pass, and one section only the author can finish.
   cold-start measurement (Ch. 10 §10.5.3, owed to Ch. 6 §6.2). See item 7 below.
 - **Ch. 11 §11.6's conflict-of-interest disclosure needs the author's review** —
   written generically because only the author knows the specifics. See item 8.
-- **Item 4's version-bump pass is now the largest structural job left.**
 
-Overfull hboxes: **45**, and zero overfull vboxes. The consistency and index
-passes added none of either, and the index pass removed one. Check any change the same way: build once with it reverted, once
+Overfull hboxes: **43**, and zero overfull vboxes. The consistency, index and
+version-bump passes added none of either; the last two each removed one.
+Check any change the same way: build once with it reverted, once
 with it in, and diff the `Overfull` lists — comparing the *multiset of sizes*,
 because line numbers shift and make a plain `diff` of the log noisy. Attributing
 boxes by reading `main.log` nesting does not work.
@@ -77,8 +77,10 @@ order of authority:
 to a reader with one attached. Removing a verifybox means the listing compiled —
 not that it was reread and felt right.
 
-**Versions live in `preamble.tex` only** (`\mafcore`, `\mafext`). Never write a
-version number into a chapter.
+**Versions live in `preamble.tex` only** — `\mafcore`, `\mafpreview`,
+`\mafalpha`, `\mafdateexact`. Never write a version number into a chapter. The
+one listing that needs a literal version (Chapter 2's CPM props) reaches the
+macro through `escapeinside={(*@}{@*)}` rather than hardcoding it.
 
 **ASCII inside listings.** No em-dashes or smart quotes in `csharp`, `xmlcode`,
 `shellcmd`, `yamlcode`. `listings` cannot handle multi-byte UTF-8 in verbatim
@@ -558,15 +560,41 @@ set**. Docker defaults: `Network = none`, `ReadOnlyRoot = true`,
 
 ## Open questions — NEW, unresolved
 
-**4. `\mafcore` is behind. The core train is now 1.15.0** (published 22 July 2026);
-`preamble.tex` still pins 1.10.0 and `\mafdate` says July 2026. Nothing written so
-far is *wrong* because of this — the session naming was verified to hold at 1.10.0
-too — but Appendix A's train table, dates and contents are a dated snapshot that
-is now two trains stale.
+**4. Version bump — DONE (August 2026), and it was not a find-and-replace.**
+Verified against `api.nuget.org`: **the release-train model no longer exists.**
+Since `1.11.1` (25 June 2026) the whole family publishes as ONE line — same base
+version, same day — differing only by prerelease suffix. `\mafcore` is now
+`1.16.0` (published 30 July 2026) with four tiers under it:
 
-Deliberately **not** bumped during the Chapter 4 pass, because changing `\mafcore`
-invalidates Appendix A's whole table plus Chapter 1's timeline, and that is a
-sweep of its own. Do it as a dedicated pass, not as a side effect of a chapter.
+| Tier | Packages |
+|---|---|
+| stable | core, Abstractions, OpenAI, Workflows, Workflows.Generators, Workflows.Declarative, GitHub.Copilot, **Harness** |
+| `-rc1` | Purview, Declarative |
+| `-preview.260730.1` | Hosting family, Foundry family, A2A, DevUI, CosmosNoSql, Hyperlight, Tools.Shell, CopilotStudio, Anthropic, DurableTask, LocalCodeAct |
+| `-alpha.260730.1` | Hosting.OpenAI, Valkey, Mcp |
+
+**The harness went stable at 1.14.0.** Anything describing it as preview is now
+wrong.
+
+**Macros changed.** `\mafext` is **deleted** — there is no extensions train.
+New: `\mafpreview`, `\mafalpha`, `\mafdateexact`. `\mafworkflows` is now an
+alias for `\mafcore`. In Appendix A's *tables* use the short `\mafcore{}-preview`
+form: the full build-dated string is 23 characters and blows out the version
+column, costing ~45 overfull boxes. The exact strings live in §A.1 only.
+
+**Packages left BEHIND the line are now the useful signal** and Appendix A has a
+table of them: AzureAI (1.0.0-rc5, superseded), FoundryMemory (1.0.0-preview),
+**Mem0 (1.0.0-preview from October 2025 — nine months stale)**, AGUI
+(1.13.0-preview). Re-check these each pass; a package rejoining the line matters.
+
+Swept: `preamble.tex`, Appendix A (rewritten §A.1 and all version columns,
+headings made categorical since tiers now mix), Chapter 1, Chapter 2, the
+introduction, Appendix C.
+
+**Chapter 2's CPM listing is now macro-driven** via `escapeinside={(*@}{@*)}`,
+so it cannot drift again — it had been hardcoded at 1.10.0, contradicting the
+rest of the book. Verified the escape actually expands by compiling a probe with
+an undefined macro inside it and confirming the error.
 
 **5. `CheckpointStore` — RESOLVED in the Chapter 6 pass, and the Chapter 4 note
 was itself half wrong.** It is `ICheckpointStore<TStoreObject>`, **generic**, not
@@ -640,14 +668,17 @@ remaining work is finishing, not writing, and it is in rough priority order:
    report nothing. The cold-start one is cheaper — do it first. Until they run,
    Appendix B stays empty and no comparative performance claim may be stated as
    fact anywhere in the book.
-2. **The version-bump pass** (item 4). `\mafcore` is two trains stale and
-   Appendix A's train table and dates are a stale snapshot. One dedicated sweep.
-   Items 5 and 6 are now **done** — see the consistency pass below.
-3. **Chapter 11 §11.6** (item 8) — only the author can finish it.
-4. **Screenshots and verifyboxes.** 27 and 23 respectively. Each verifybox is a
+2. **Chapter 11 §11.6** (item 8) — only the author can finish it.
+   Items 4, 5 and 6 are now **done**.
+3. **Screenshots and verifyboxes.** 27 and 23 respectively. Each verifybox is a
    promise to a reader that something was not compiled; clearing one means
    compiling the listing, not rereading it.
-5. **Appendix A's margin cleanup.** The worst margin debt in the book.
+4. **Appendix A's margin cleanup.** The worst margin debt in the book.
+5. **Re-verify versions before any release.** The family now moves as one line
+   and ships often — `\mafcore` was three releases stale after six weeks. The
+   check is cheap: query `api.nuget.org/v3-flatcontainer/<pkg>/index.json` for
+   the core package and the four tier representatives, and re-check the
+   behind-the-line table in Appendix A §A.1.
 6. Optional: a glossary (superstep, executor binding, isolation key, delivery
    status, progress ledger) and a further-reading section. Neither is essential.
 

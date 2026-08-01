@@ -221,16 +221,19 @@ workflow route configuration are published alongside these. Appendix~\ref{app:pa
 carries the full list with the versions used throughout the book.
 
 \begin{versionbox}
-These packages ship in \emph{release trains}, not on one version line. As this
-was written the core train --- \pkg{Microsoft.Agents.AI},
-\pkg{Microsoft.Agents.AI.OpenAI}, \pkg{Microsoft.Agents.AI.Workflows} --- was at
-\mafcore{}, while the extensions train carrying the harness, durable execution
-and Foundry hosting was at \mafext{}, and two packages were still on a
-\code{1.0.0-rc5} from March. A single \code{\$(MafVersion)} property will not
-work. Pin every package explicitly; Central Package Management
+The family used to ship in separate \emph{release trains} on different version
+lines. It no longer does: since \code{1.11.1} in June 2026 every package shares a
+base version and a publication date, and differs only in its prerelease suffix.
+As this was written that base version was \mafcore{}, with four maturity tiers
+underneath it --- stable, \code{-rc1}, \code{-preview} and \code{-alpha}.
+
+A single \code{\$(MafVersion)} property still will not work, because the preview
+and alpha suffixes carry a build date that changes every release. Pin every
+prerelease package explicitly; Central Package Management
 (\code{Directory.Packages.props}) is set up in Chapter~\ref{ch:first-agent} for
-exactly this reason, and Appendix~\ref{app:packages} lists every package with
-its train.
+exactly this reason, and Appendix~\ref{app:packages}, \S\ref{sec:trains}, lists
+every package with its tier --- including the handful left \emph{behind} the
+line, which is now the most useful signal in the whole table.
 \end{versionbox}
 
 \needscreenshot{vs-nuget-browse-maf}%

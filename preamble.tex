@@ -273,10 +273,16 @@
 %  PINNED VERSIONS — single source of truth
 %  Change these here; they propagate through the whole book.
 % ============================================================
-\newcommand{\mafcore}{1.10.0}         % core train: Agents.AI, .OpenAI, .Workflows
-\newcommand{\mafext}{1.6.2}           % extensions train: Harness, DurableTask, Foundry.Hosting
-\newcommand{\mafworkflows}{1.10.0}    % same train as core; kept as a separate macro
+% Since 1.11.1 (25 June 2026) the family publishes as ONE line: same base
+% version, same day, differing only by prerelease suffix. The separate
+% "extensions train" that \mafext used to name no longer exists -- the harness
+% joined the main line at 1.14.0 and went stable there.
+\newcommand{\mafcore}{1.16.0}                        % stable: no suffix
+\newcommand{\mafpreview}{1.16.0-preview.260730.1}    % preview tier
+\newcommand{\mafalpha}{1.16.0-alpha.260730.1}        % alpha tier
+\newcommand{\mafworkflows}{\mafcore}  % same line as core; kept as a separate macro
 \newcommand{\mafdate}{July 2026}      % "verified as of"
+\newcommand{\mafdateexact}{30 July 2026}  % publication date of \mafcore
 \newcommand{\dotnetver}{.NET 10}
 \newcommand{\vsver}{Visual Studio 2026}
 

@@ -24,9 +24,12 @@ In Visual Studio: \emph{Include prerelease} in the NuGet Package Manager.
 
 \subsection{``Version conflict'' after adding a hosting or harness package}
 
-You have crossed release trains. Core sits at \mafcore{}; the harness, durable
-execution and Foundry hosting sit at \mafext{}. This is expected --- pin both
-numbers rather than trying to force one.
+You have crossed maturity tiers. The base version is shared across the family,
+but preview and alpha packages carry a suffix with a build date in it --- so
+\code{\mafcore{}} and \code{\mafpreview{}} are the same release and cannot be
+expressed by one property. Pin the full string for every prerelease package
+rather than trying to force one number. Appendix~\ref{app:packages},
+\S\ref{sec:trains}.
 
 If a transitive conflict follows, \code{CentralPackageTransitivePinningEnabled}
 in \code{Directory.Packages.props} resolves most of them by pinning the

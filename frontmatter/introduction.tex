@@ -113,21 +113,26 @@ API member, and \code{dotnet build} a literal command or file path.
 
 \section*{On versions, and why this book will rot}
 
-Agent Framework does not ship as one package on one version line. It ships as a
-family of roughly three dozen packages moving in several \emph{release trains},
-and at the time of writing three trains were live simultaneously: the core train
-(\pkg{Microsoft.Agents.AI}, \pkg{Microsoft.Agents.AI.OpenAI},
-\pkg{Microsoft.Agents.AI.Workflows}) at \mafcore{}; an extensions train
-carrying the harness, durable execution and Foundry hosting at \mafext{}; and a
-handful of packages stranded on older previews. Packages within a train move
-together; packages across trains do not. Assuming one version applies to
-everything is the first mistake to avoid.
+Agent Framework ships as a family of roughly three dozen packages, and how that
+family versions itself changed while this book was being written --- which is
+itself the best argument for the section you are reading.
+
+It used to move in several \emph{release trains} on separate version lines.
+Since \code{1.11.1}, in June 2026, it moves as one: every package shares a base
+version and a publication date, and differs only in its prerelease suffix.
+At the time of writing that base version was \mafcore{}, with stable,
+\code{-rc1}, \code{-preview} and \code{-alpha} tiers underneath it. The version
+number therefore tells you nothing about maturity; only the suffix does. And a
+few packages sit \emph{behind} the line, which is the clearest signal available
+that something is being left to wither.
 
 Every listing in this book is written against the versions recorded on the title
 page, and every sample project pins them explicitly through Central Package
-Management. Where a feature is newer than GA --- the agent harness, hosted
-agents, declarative workflows --- it is marked with a \emph{Version sensitive}
-callout.
+Management. Where a feature is newer than GA --- hosted agents, declarative
+workflows --- it is marked with a \emph{Version sensitive} callout. The agent
+harness was in that category for most of this book's writing and reached stable
+at \code{1.14.0}; Chapter~\ref{ch:harness} still has reasons to be careful with
+it, but its prerelease status is no longer one of them.
 
 The honest position is this: the conceptual material in Parts~I and~II will
 outlive several minor versions, because agents, tools, executors and edges are

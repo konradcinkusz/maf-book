@@ -13,47 +13,90 @@ Treat it as a dated snapshot. Before starting new work, check
 \end{versionbox}
 
 % ============================================================
-\section{Release trains}
+\section{One line, four maturities}
 \label{sec:trains}
 \index{release trains}
+\index{packages!maturity suffixes}
+\index{packages!one release line}
 
-The single most useful fact about the package family is that it does not move on
-one version line. It moves in \emph{trains} --- groups of packages published
-together on the same date with the same version. At the time of writing four were
-observable:
+Earlier in the framework's life the family moved in \emph{trains} --- separate
+groups of packages, each on its own version line and publication schedule. That
+is no longer true, and the change is recent enough that most written advice about
+it, including earlier drafts of this book, is out of date.
+
+Since \code{1.11.1} in late June 2026 the family publishes as \textbf{one line}:
+every package shares a base version and a publication date, and differs only in
+its prerelease suffix. At \mafcore{}, published \mafdateexact{}, there are four
+maturity tiers.
+
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Suffix} & \textbf{Packages} \\
+\midrule
+none --- stable & Core, Abstractions, OpenAI, Workflows, Workflows.Generators,
+Workflows.Declarative, GitHub Copilot, and \textbf{the Harness} \\[4pt]
+\code{-rc1} & Purview, and declarative \emph{agents} \\[4pt]
+\code{-preview} & Hosting and its ASP.NET Core, A2A and Azure Functions
+companions; Foundry client and hosting; A2A; DevUI; Cosmos NoSQL; Hyperlight;
+Tools.Shell; Copilot Studio; Anthropic; DurableTask; LocalCodeAct \\[4pt]
+\code{-alpha} & Hosting.OpenAI, Valkey, Mcp \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Three consequences, and they are not the ones that applied a year ago.
+
+\textbf{The harness is stable now.} It joined the main line at \code{1.14.0} and
+shipped without a prerelease suffix. If you avoided it because it was preview,
+that reason has expired --- though Chapter~\ref{ch:harness} has a different
+reason to be careful with it.
+
+\textbf{A single MSBuild property still will not work, for a different reason.}
+The base version is now shared, so \code{\$(MafVersion)} covers the stable tier.
+It breaks the moment you add a preview package, because the suffix carries a
+build date --- \code{-preview.260730.1} --- that changes with every release and
+is not derivable from the base version. Pin each prerelease package explicitly.
+
+\textbf{A package \emph{off} the line is the signal.} This is the old ``a stale
+train is a signal'' rule, sharpened: when everything ships together, a package
+that did not ship is conspicuous. At the time of writing:
 
 \begin{center}
 \small
 \begin{tabularx}{\linewidth}{@{}llX@{}}
 \toprule
-\textbf{Train} & \textbf{Published} & \textbf{Contents} \\
+\textbf{Package} & \textbf{Stuck at} & \textbf{Reading} \\
 \midrule
-\mafcore{} & 10 June 2026 & Core, providers, workflows, DevUI, A2A, AG-UI, Foundry client, GitHub Copilot \\
-\mafext{} & 22 May 2026 & Harness, Hyperlight/CodeAct, DurableTask, Copilot Studio, Cosmos NoSQL, Foundry hosting, Purview, Azure Functions hosting, Aspire DevUI \\
-\code{1.0.0-rc5} & 31 March 2026 & \pkg{Microsoft.Agents.AI.AzureAI} and its declarative companion --- effectively superseded by the \code{Foundry} packages \\
-\code{1.0.0-preview} & 31 March 2026 & \pkg{Microsoft.Agents.AI.FoundryMemory} \\
+\pkg{Microsoft.Agents.AI.AzureAI} & 1.0.0-rc5 & Superseded by the
+\code{Foundry} packages, which are its continuation \\[4pt]
+\pkg{Microsoft.Agents.AI.FoundryMemory} & 1.0.0-preview & Four months
+behind the line \\[4pt]
+\pkg{Microsoft.Agents.AI.Mem0} & 1.0.0-preview & Nine months behind.
+Treat as unmaintained until proven otherwise \\[4pt]
+\pkg{Microsoft.Agents.AI.AGUI} & 1.13.0-preview & Three releases behind \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Three consequences.
+\begin{note}
+The merge is good news for anyone maintaining a solution: one number to track
+instead of four, and a package's maturity readable from its suffix rather than
+from cross-referencing dates. Do not carry forward the habit of assuming the
+family is fragmented --- but do keep checking the suffix, because the version
+number no longer distinguishes stable from alpha at all.
+\end{note}
 
-\textbf{A single MSBuild property will not work.} The tempting
-\code{<PackageVersion Include="..." Version="\$(MafVersion)" />} pattern breaks
-the moment you take a dependency from a second train. Pin each package.
-
-\textbf{Version number does not tell you maturity.} \pkg{Microsoft.Agents.AI} at
-\mafcore{} is stable; \pkg{Microsoft.Agents.AI.Hosting} at
-\code{\mafcore{}-preview.260610.1} is not. Same train, same number, different
-suffix. You must read the suffix, not the version.
-
-\textbf{A stale train is a signal.} Packages still on a March \code{rc5} while
-the family has shipped twice since are being deprecated in place. The
-\code{AzureAI} packages are the example: the \code{Foundry}-named packages are
-their continuation.
+The sections that follow group packages by \emph{what they do}, not by maturity,
+because maturity is now a per-package property you read off the version column.
+Several groups mix tiers: the harness is stable while everything beside it is
+preview, and GitHub Copilot is stable among prerelease providers. Where a table
+shows \code{\mafcore{}-preview}, the version you actually pin carries a build
+date as well --- \code{\mafpreview{}} at the time of writing.
 
 % ============================================================
-\section{Core --- stable}
+\section{Core}
 \index{packages!Abstractions}
 \index{packages!Workflows}
 \index{packages!Workflows.Generators}
@@ -101,7 +144,7 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \end{note}
 
 % ============================================================
-\section{Providers and protocols --- prerelease}
+\section{Providers and protocols}
 \index{packages!Anthropic}
 \index{packages!GitHub.Copilot}
 \index{packages!Foundry}
@@ -118,20 +161,20 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
 \pkg{Microsoft.Agents.AI.Anthropic} & \mafcore{}-preview & Anthropic agents. \\
-\pkg{Microsoft.Agents.AI.GitHub.Copilot} & \mafcore{}-rc1 & GitHub Copilot SDK as an agent backend. \\
+\pkg{Microsoft.Agents.AI.GitHub.Copilot} & \mafcore{} & GitHub Copilot SDK as an agent backend. \\
 \pkg{Microsoft.Agents.AI.Foundry} & \mafcore{}-preview & Foundry Agents client. \\
 \pkg{Microsoft.Agents.AI.AzureAI} & 1.0.0-rc5 & Foundry Agents, older naming. Superseded. \\
 \pkg{Microsoft.Agents.AI.AzureAI.Persistent} & \mafcore{}-preview & Azure AI Persistent Agents. \\
-\pkg{Microsoft.Agents.AI.CopilotStudio} & \mafext{}-preview & Copilot Studio integration. \\
+\pkg{Microsoft.Agents.AI.CopilotStudio} & \mafcore{}-preview & Copilot Studio integration. \\
 \pkg{Microsoft.Agents.AI.A2A} & \mafcore{}-preview & Agent-to-Agent protocol client. Chapter~\ref{ch:hosting}. \\
-\pkg{Microsoft.Agents.AI.AGUI} & \mafcore{}-preview & Agent-User Interaction protocol client. \\
-\pkg{Microsoft.Agents.AI.Mcp} & \mafcore{}-preview & MCP support beyond the client in Chapter~\ref{ch:tools}, including long-running task integration. \\
+\pkg{Microsoft.Agents.AI.AGUI} & 1.13.0-preview & Agent-User Interaction protocol client. Three releases behind the line --- \S\ref{sec:trains}. \\
+\pkg{Microsoft.Agents.AI.Mcp} & \mafcore{}-alpha & MCP support beyond the client in Chapter~\ref{ch:tools}, including long-running task integration. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 % ============================================================
-\section{Hosting --- prerelease}
+\section{Hosting}
 \index{packages!Hosting}
 \index{packages!Hosting.AspNetCore}
 \index{packages!Hosting.OpenAI}
@@ -151,8 +194,8 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \pkg{Microsoft.Agents.AI.Hosting.A2A} & \mafcore{}-preview & Hosting A2A agents. \\
 \pkg{Microsoft.Agents.AI.Hosting.A2A.AspNetCore} & \mafcore{}-preview & A2A hosting in ASP.NET Core. \\
 \pkg{Microsoft.Agents.AI.Hosting.AGUI.AspNetCore} & \mafcore{}-preview & AG-UI hosting in ASP.NET Core. \\
-\pkg{Microsoft.Agents.AI.Hosting.AzureFunctions} & \mafext{}-preview & Durable agent hosting on Azure Functions. \\
-\pkg{Microsoft.Agents.AI.Foundry.Hosting} & \mafext{}-preview & Foundry Hosted Agents. Chapter~\ref{ch:hosting}. \\
+\pkg{Microsoft.Agents.AI.Hosting.AzureFunctions} & \mafcore{}-preview & Durable agent hosting on Azure Functions. \\
+\pkg{Microsoft.Agents.AI.Foundry.Hosting} & \mafcore{}-preview & Foundry Hosted Agents. Chapter~\ref{ch:hosting}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -161,13 +204,14 @@ below Agent Framework. See \S\ref{sec:seam} in Chapter~\ref{ch:first-agent}.
 \index{namespaces!versus package names}
 The namespace and the package name are not always the same word.
 \code{using Microsoft.Agents.AI.Foundry.Hosting;} comes from the package of that
-name --- but it sits on the \mafext{} train, not the \mafcore{} one, so adding it
-to a solution otherwise pinned at \mafcore{} means adding a second version number.
-This is the most common cause of a confusing restore failure.
+name --- but that package is on the preview tier, so adding it to a solution
+otherwise pinned to stable versions means adding a version string with a build
+date in it, not just the base number. This is the most common cause of a
+confusing restore failure. See \S\ref{sec:trains}.
 \end{warning}
 
 % ============================================================
-\section{Execution, storage and governance --- prerelease}
+\section{Execution, storage and governance}
 
 \subsection{Execution and sandboxing}
 \index{packages!Harness}
@@ -182,11 +226,11 @@ This is the most common cause of a confusing restore failure.
 \toprule
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
-\pkg{Microsoft.Agents.AI.Harness} & \mafext{}-preview & \api{HarnessAgent}: a pre-configured agent for long-running tasks. Chapter~\ref{ch:harness}. \\
-\pkg{Microsoft.Agents.AI.Tools.Shell} & \mafext{}-preview & \api{LocalShellExecutor} and \api{DockerShellExecutor}. \S\ref{sec:harness-shell}. \\
-\pkg{Microsoft.Agents.AI.Hyperlight} & \mafext{}-preview & Hyperlight-backed CodeAct --- micro-VM sandboxed execution of model-generated code. \\
-\pkg{Microsoft.Agents.AI.LocalCodeAct} & \mafext{}-preview & Local Python CodeAct with syntax-tree validation. \textbf{Does not sandbox} --- see below. \\
-\pkg{Microsoft.Agents.AI.DurableTask} & \mafext{}-preview & Distributed durable execution. Chapter~\ref{ch:hosting}. \\
+\pkg{Microsoft.Agents.AI.Harness} & \mafcore{} & \api{HarnessAgent}: a pre-configured agent for long-running tasks. Chapter~\ref{ch:harness}. \\
+\pkg{Microsoft.Agents.AI.Tools.Shell} & \mafcore{}-preview & \api{LocalShellExecutor} and \api{DockerShellExecutor}. \S\ref{sec:harness-shell}. \\
+\pkg{Microsoft.Agents.AI.Hyperlight} & \mafcore{}-preview & Hyperlight-backed CodeAct --- micro-VM sandboxed execution of model-generated code. \\
+\pkg{Microsoft.Agents.AI.LocalCodeAct} & \mafcore{}-preview & Local Python CodeAct with syntax-tree validation. \textbf{Does not sandbox} --- see below. \\
+\pkg{Microsoft.Agents.AI.DurableTask} & \mafcore{}-preview & Distributed durable execution. Chapter~\ref{ch:hosting}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -216,9 +260,9 @@ yourself, to the standard of \S\ref{sec:harness-shell}.
 \toprule
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
-\pkg{Microsoft.Agents.AI.CosmosNoSql} & \mafext{}-preview & Cosmos DB NoSQL implementations of the history and checkpoint abstractions. \\
-\pkg{Microsoft.Agents.AI.Valkey} & \mafext{}-preview & Valkey-backed chat history persistence. Chapter~\ref{ch:memory}. \\
-\pkg{Microsoft.Agents.AI.Mem0} & \mafext{}-preview & Mem0 as an \api{AIContextProvider} --- hosted agent memory. Chapter~\ref{ch:memory}. \\
+\pkg{Microsoft.Agents.AI.CosmosNoSql} & \mafcore{}-preview & Cosmos DB NoSQL implementations of the history and checkpoint abstractions. \\
+\pkg{Microsoft.Agents.AI.Valkey} & \mafcore{}-alpha & Valkey-backed chat history persistence. Chapter~\ref{ch:memory}. \\
+\pkg{Microsoft.Agents.AI.Mem0} & 1.0.0-preview & Mem0 as an \api{AIContextProvider}. Nine months behind the line --- check before adopting. \\
 \pkg{Microsoft.Agents.AI.FoundryMemory} & 1.0.0-preview & Foundry Memory integration. Chapter~\ref{ch:memory}. \\
 \bottomrule
 \end{tabularx}
@@ -250,7 +294,7 @@ named from your own code.
 \toprule
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
-\pkg{Microsoft.Agents.AI.Purview} & \mafext{}-rc1 & Connecting generative AI apps to Microsoft Purview. The governance answer to the data-handling warnings in Chapters~\ref{ch:evaluation} and~\ref{ch:capstone}. \\
+\pkg{Microsoft.Agents.AI.Purview} & \mafcore{}-rc1 & Connecting generative AI apps to Microsoft Purview. The governance answer to the data-handling warnings in Chapters~\ref{ch:evaluation} and~\ref{ch:capstone}. \\
 \pkg{Microsoft.Agents.AI.Declarative} & \mafcore{}-rc1 & Declarative \emph{agents}, as distinct from declarative workflows. \\
 \bottomrule
 \end{tabularx}
@@ -268,8 +312,8 @@ named from your own code.
 \textbf{Package} & \textbf{Version} & \textbf{Purpose} \\
 \midrule
 \pkg{Microsoft.Agents.AI.DevUI} & \mafcore{}-preview & Developer UI for inspecting agents. Chapter~\ref{ch:observability}. \\
-\pkg{Aspire.Hosting.AgentFramework.DevUI} & \mafext{}-preview & DevUI as an Aspire resource. \\
-\pkg{Microsoft.Agents.AI.ProjectTemplates} & 1.3.0-preview & \code{dotnet new} templates: an AI Agent Web API project. \\
+\pkg{Aspire.Hosting.AgentFramework.DevUI} & \mafcore{}-preview & DevUI as an Aspire resource. \\
+\pkg{Microsoft.Agents.AI.ProjectTemplates} & 1.13.0-preview & \code{dotnet new} templates: an AI Agent Web API project. \\
 \pkg{Microsoft.Extensions.AI.Templates} & --- & Sibling package: AI chat web app templates with vector storage and ingestion. Not published by this account. \\
 \pkg{Microsoft.McpServer.ProjectTemplates} & --- & Sibling package: an MCP server template. Relevant to Chapter~\ref{ch:tools}. \\
 \bottomrule
@@ -282,7 +326,7 @@ only to see what Microsoft considers a default project shape.
 regardless:
 
 \begin{shellcmd}
-dotnet new install Microsoft.Agents.AI.ProjectTemplates::1.3.0-preview.1.26251.3
+dotnet new install Microsoft.Agents.AI.ProjectTemplates::1.13.0-preview.1.26379.3
 dotnet new list agent
 \end{shellcmd}
 

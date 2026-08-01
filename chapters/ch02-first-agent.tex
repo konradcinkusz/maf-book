@@ -65,7 +65,7 @@ they are easy to miss because none of them is installed by default:
 \end{center}
 
 \begin{shellcmd}
-dotnet new install Microsoft.Agents.AI.ProjectTemplates::1.3.0-preview.1.26251.3
+dotnet new install Microsoft.Agents.AI.ProjectTemplates::1.13.0-preview.1.26379.3
 dotnet new list agent
 \end{shellcmd}
 
@@ -114,10 +114,11 @@ framework, and drift in a scaffold is expensive because you only notice it when
 something else breaks.
 
 \textbf{The scaffolding is the lesson.} What follows --- Central Package
-Management across release trains --- is precisely the thing a template hides,
-and precisely the thing that will cost you an afternoon in
-Chapter~\ref{ch:hosting} when you add a package from a different train. Typing it
-once means you understand the failure when it arrives.
+Management across a family with four maturity tiers --- is precisely the thing a
+template hides, and precisely the thing that will cost you an afternoon in
+Chapter~\ref{ch:hosting} when you add a prerelease package and discover its
+version string is not the one you have been using. Typing it once means you
+understand the failure when it arrives.
 
 \begin{exercisebox}
 Install the templates anyway and generate one agent web API project into a
@@ -148,12 +149,13 @@ dotnet sln add src/01-agents/HelloAgent/HelloAgent.csproj
 
 \subsection{Pinning versions in one place}
 
-Agent Framework ships as roughly three dozen packages on several release trains,
-and by Chapter~\ref{ch:hosting} you will have a dozen projects referencing
-overlapping sets of them. Central Package Management solves this before it
-becomes a problem. Create \code{Directory.Packages.props} at the solution root:
+Agent Framework ships as roughly three dozen packages, in four maturity tiers
+that do not share a version string, and by Chapter~\ref{ch:hosting} you will have
+a dozen projects referencing overlapping sets of them. Central Package Management
+solves this before it becomes a problem. Create \code{Directory.Packages.props}
+at the solution root:
 
-\begin{xmlcode}[caption={\code{Directory.Packages.props} --- the only place versions are written}, label={lst:cpm}]
+\begin{xmlcode}[caption={\code{Directory.Packages.props} --- the only place versions are written}, label={lst:cpm}, escapeinside={(*@}{@*)}]
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
@@ -161,10 +163,10 @@ becomes a problem. Create \code{Directory.Packages.props} at the solution root:
   </PropertyGroup>
 
   <ItemGroup Label="Agent Framework">
-    <PackageVersion Include="Microsoft.Agents.AI" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.10.0" />
-    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="1.10.0" />
+    <PackageVersion Include="Microsoft.Agents.AI" Version="(*@\mafcore{}@*)" />
+    <PackageVersion Include="Microsoft.Agents.AI.Abstractions" Version="(*@\mafcore{}@*)" />
+    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="(*@\mafcore{}@*)" />
+    <PackageVersion Include="Microsoft.Agents.AI.Workflows" Version="(*@\mafcore{}@*)" />
   </ItemGroup>
 
   <ItemGroup Label="Providers">
@@ -184,12 +186,12 @@ becomes a problem. Create \code{Directory.Packages.props} at the solution root:
 
 \begin{versionbox}
 Replace the version numbers in Listing~\ref{lst:cpm} with whatever is current
-when you read this. The four core packages above share a version because they
-ship on the same train. The moment you add a package from the extensions train
---- the harness in Chapter~\ref{ch:harness}, durable execution in
-Chapter~\ref{ch:hosting} --- you will be pinning a different number in the same
-file, and that is correct rather than a mistake.
-Appendix~\ref{app:packages} maps every package to its train.
+when you read this. The four packages above share a version because they are all
+on the stable tier. The moment you add a prerelease package --- durable execution
+in Chapter~\ref{ch:hosting}, hosted agents, the DevUI --- you will be pinning a
+longer string in the same file, because preview and alpha versions carry a build
+date the base number does not give you. That is correct rather than a mistake.
+Appendix~\ref{app:packages}, \S\ref{sec:trains}, maps every package to its tier.
 \end{versionbox}
 
 Individual projects then reference packages without versions:
