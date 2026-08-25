@@ -51,7 +51,7 @@ jobs:
       - name: Rename artefact
         run: mv main.pdf ${{ vars.PDF_NAME || 'MAF-for-dotnet-Engineers' }}.pdf
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: book-pdf
           path: ${{ vars.PDF_NAME || 'MAF-for-dotnet-Engineers' }}.pdf
